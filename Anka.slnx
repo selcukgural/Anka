@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/Benchmark/">
+    <Project Path="Benchmark/Anka.Benchmark/Anka.Benchmark.csproj" />
+  </Folder>
+  <Folder Name="/docs/">
+    <File Path="docs\throughput-results.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Anka/Anka.csproj" />
+  </Folder>
+  <Folder Name="/Test/">
+    <Project Path="Test/Anka.Test/Anka.Test.csproj" />
+  </Folder>
+  <Folder Name="/Test/LoadTest/">
+    <Project Path="Test/LoadTest/Anka.HttpConsole/Anka.HttpConsole.csproj" />
+    <Project Path="Test/LoadTest/Anka.Wrk.LoadTest/Anka.Wrk.LoadTest.csproj" />
+    <Project Path="Test/LoadTest/Kestrel.HttpConsole/Kestrel.HttpConsole.csproj" />
+  </Folder>
+</Solution>
