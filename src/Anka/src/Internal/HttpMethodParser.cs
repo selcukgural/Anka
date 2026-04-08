@@ -11,18 +11,44 @@ internal static class HttpMethodParser
     /// An <see cref="HttpMethod"/> enumeration value corresponding to the provided span.
     /// Returns <see cref="HttpMethod.Unknown"/> if the span does not match a known HTTP method.
     /// </returns>
-    public static HttpMethod Parse(ReadOnlySpan<byte> span) => span switch
+    /// <remarks>
+    /// This uses a length/byte dispatch instead of chained <c>SequenceEqual</c> calls because
+    /// HTTP methods are short fixed ASCII tokens on a very hot path. Narrowing by length and a
+    /// few discriminating bytes reduces repeated comparisons and gives the JIT a simpler branch tree.
+    /// </remarks>
+    public static HttpMethod Parse(ReadOnlySpan<byte> span) => span.Length switch
     {
-        _ when span.SequenceEqual("GET"u8)     => HttpMethod.Get,
-        _ when span.SequenceEqual("POST"u8)    => HttpMethod.Post,
-        _ when span.SequenceEqual("PUT"u8)     => HttpMethod.Put,
-        _ when span.SequenceEqual("DELETE"u8)  => HttpMethod.Delete,
-        _ when span.SequenceEqual("HEAD"u8)    => HttpMethod.Head,
-        _ when span.SequenceEqual("OPTIONS"u8) => HttpMethod.Options,
-        _ when span.SequenceEqual("PATCH"u8)   => HttpMethod.Patch,
-        _ when span.SequenceEqual("TRACE"u8)   => HttpMethod.Trace,
-        _ when span.SequenceEqual("CONNECT"u8) => HttpMethod.Connect,
-        _                                      => HttpMethod.Unknown,
+        3 => span[0] switch
+        {
+            (byte)'G' when span[1] == (byte)'E' && span[2] == (byte)'T' => HttpMethod.Get,
+            (byte)'P' when span[1] == (byte)'U' && span[2] == (byte)'T' => HttpMethod.Put,
+            _                                                            => HttpMethod.Unknown,
+        },
+        4 => span[0] switch
+        {
+            (byte)'P' when span[1] == (byte)'O' && span[2] == (byte)'S' && span[3] == (byte)'T' => HttpMethod.Post,
+            (byte)'H' when span[1] == (byte)'E' && span[2] == (byte)'A' && span[3] == (byte)'D' => HttpMethod.Head,
+            _                                                                                      => HttpMethod.Unknown,
+        },
+        5 => span[0] switch
+        {
+            (byte)'P' when span[1] == (byte)'A' && span[2] == (byte)'T' && span[3] == (byte)'C' && span[4] == (byte)'H' => HttpMethod.Patch,
+            (byte)'T' when span[1] == (byte)'R' && span[2] == (byte)'A' && span[3] == (byte)'C' && span[4] == (byte)'E' => HttpMethod.Trace,
+            _                                                                                                                => HttpMethod.Unknown,
+        },
+        6 when span[0] == (byte)'D' &&
+               span[1] == (byte)'E' &&
+               span[2] == (byte)'L' &&
+               span[3] == (byte)'E' &&
+               span[4] == (byte)'T' &&
+               span[5] == (byte)'E' => HttpMethod.Delete,
+        7 => span[0] switch
+        {
+            (byte)'O' when span[1] == (byte)'P' && span[2] == (byte)'T' && span[3] == (byte)'I' && span[4] == (byte)'O' && span[5] == (byte)'N' && span[6] == (byte)'S' => HttpMethod.Options,
+            (byte)'C' when span[1] == (byte)'O' && span[2] == (byte)'N' && span[3] == (byte)'N' && span[4] == (byte)'E' && span[5] == (byte)'C' && span[6] == (byte)'T' => HttpMethod.Connect,
+            _                                                                                                                                                              => HttpMethod.Unknown,
+        },
+        _ => HttpMethod.Unknown,
     };
 
     /// <summary>

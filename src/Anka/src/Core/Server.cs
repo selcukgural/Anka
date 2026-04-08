@@ -31,6 +31,12 @@ public sealed class Server
     private readonly RequestHandler _handler;
 
     /// <summary>
+    /// Raised once the listening socket has been bound and started accepting connections.
+    /// Useful for startup instrumentation and readiness reporting.
+    /// </summary>
+    public event Action<IPEndPoint>? ListeningStarted;
+
+    /// <summary>
     /// Represents an HTTP server that listens for incoming requests and handles them with a specified request handler.
     /// </summary>
     public Server(RequestHandler handler, int port, string host = "127.0.0.1")
@@ -60,6 +66,12 @@ public sealed class Server
     /// </returns>
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
+        // Pre-warm the thread pool so that burst workloads at high connection counts
+        // (e.g. c=400) do not spend the first few seconds waiting for the pool to
+        // slowly inject new threads (default hill-climb injects ~1 thread per 500 ms).
+        var minThreads = Math.Max(Environment.ProcessorCount * 4, 64);
+        ThreadPool.SetMinThreads(minThreads, minThreads);
+
         using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 
         socket.NoDelay = true;
@@ -68,6 +80,7 @@ public sealed class Server
         socket.Listen(backlog: 512);
 
         Console.WriteLine($"Listening on {_endPoint}");
+        ListeningStarted?.Invoke(_endPoint);
 
         // Run multiple accept loops in parallel to avoid serialization under burst traffic.
         var acceptorCount = Math.Max(Environment.ProcessorCount / 2, 2);
@@ -81,6 +94,13 @@ public sealed class Server
         await Task.WhenAll(acceptors);
     }
 
+    /// <summary>
+    /// Continuously accepts incoming client connections from a listening socket
+    /// and starts a connection-handling task for each client.
+    /// </summary>
+    /// <param name="listener">The socket that is listening for incoming connections.</param>
+    /// <param name="cancellationToken">A cancellation token that can be used to stop the accept loop.</param>
+    /// <returns>A task representing the asynchronous operation of accepting connections.</returns>
     private async Task AcceptLoopAsync(Socket listener, CancellationToken cancellationToken)
     {
         try

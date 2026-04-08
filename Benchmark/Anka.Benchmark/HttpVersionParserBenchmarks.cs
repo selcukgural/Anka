@@ -9,17 +9,17 @@ namespace Anka.Benchmark;
 [MemoryDiagnoser]
 public class HttpVersionParserBenchmarks
 {
-    private byte[] _http11  = null!;
-    private byte[] _http10  = null!;
-    private byte[] _http2   = null!;
+    private byte[] _http11 = null!;
+    private byte[] _http10 = null!;
+    private byte[] _http2 = null!;
     private byte[] _unknown = null!;
 
     [GlobalSetup]
     public void Setup()
     {
-        _http11  = "HTTP/1.1"u8.ToArray();
-        _http10  = "HTTP/1.0"u8.ToArray();
-        _http2   = "HTTP/2"u8.ToArray();
+        _http11 = "HTTP/1.1"u8.ToArray();
+        _http10 = "HTTP/1.0"u8.ToArray();
+        _http2 = "HTTP/2"u8.ToArray();
         _unknown = "foobar"u8.ToArray();
     }
 

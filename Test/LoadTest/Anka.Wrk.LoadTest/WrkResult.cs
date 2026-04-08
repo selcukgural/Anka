@@ -11,6 +11,7 @@ internal sealed record WrkResult(
     double P50Ms,
     double P90Ms,
     double P99Ms,
+    double P999Ms,
     double TransferMbSec,
     string RawOutput)
 {

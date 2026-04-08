@@ -34,15 +34,18 @@ public sealed class HttpResponseWriter : IDisposable
     internal HttpResponseWriter(Socket socket)
     {
         _socket = socket;
-        _buf    = ArrayPool<byte>.Shared.Rent(DefaultBufSize);
+        _buf = ArrayPool<byte>.Shared.Rent(DefaultBufSize);
     }
 
     /// <summary>Returns the connection-scoped buffer to the pool.</summary>
     public void Dispose()
     {
         var buf = Interlocked.Exchange(ref _buf, null!);
+
         if (buf is not null)
+        {
             ArrayPool<byte>.Shared.Return(buf);
+        }
     }
 
     /// <summary>
@@ -73,11 +76,11 @@ public sealed class HttpResponseWriter : IDisposable
     /// an exception is thrown.
     /// </returns>
     public ValueTask WriteAsync(int statusCode, ReadOnlyMemory<byte> body = default, ReadOnlyMemory<byte> contentType = default,
-                                      bool keepAlive = true, CancellationToken cancellationToken = default)
+                                bool keepAlive = true, CancellationToken cancellationToken = default)
     {
-        var headerEstimate    = 512;
+        const int headerEstimate = 512;
         var smallBodyThreshold = body.Length <= 4096 ? body.Length : 0;
-        var needed            = headerEstimate + smallBodyThreshold;
+        var needed = headerEstimate + smallBodyThreshold;
 
         byte[]? tempBuf = null;
         var buf = _buf;
@@ -85,44 +88,72 @@ public sealed class HttpResponseWriter : IDisposable
         if (needed > buf.Length)
         {
             tempBuf = ArrayPool<byte>.Shared.Rent(needed);
-            buf     = tempBuf;
+            buf = tempBuf;
         }
 
         var pos = BuildHeaderBlock(buf, statusCode, body, keepAlive, contentType, smallBodyThreshold);
 
-        // Fast synchronous path: try send without async state machine.
+        // Fast synchronous path: try sending without async state machine.
         if (smallBodyThreshold > 0 || body.IsEmpty)
         {
-            // Single buffer send (headers + inline body, or headers only).
+            // Single buffer send it (headers + inline body, or headers only).
             return SendSingleBuffer(buf, pos, tempBuf, cancellationToken);
         }
-        else
-        {
-            // Large body: headers + separate body send.
-            return SendHeadersThenBody(buf, pos, body, tempBuf, cancellationToken);
-        }
+
+        // Large body: headers + separate body send.
+        return SendHeadersThenBody(buf, pos, body, tempBuf, cancellationToken);
     }
 
+    /// <summary>
+    /// Sends a single buffer containing the HTTP response headers and optional embedded body data
+    /// directly through the underlying socket. Optimized for scenarios where the entire payload
+    /// (headers + small body, or headers only) fits into a single buffer.
+    /// </summary>
+    /// <param name="buf">The buffer containing the data to send, including headers and optional embedded body.</param>
+    /// <param name="pos">The length of data in the buffer that needs to be sent.</param>
+    /// <param name="tempBuf">
+    /// A temporary buffer allocated for additional capacity if the connection-scoped buffer was insufficient.
+    /// This will be returned to the pool after the send operation completes.
+    /// </param>
+    /// <param name="ct">A token to monitor for cancellation requests during the send operation.</param>
+    /// <returns>
+    /// A <see cref="ValueTask"/> representing the asynchronous send operation. Completes immediately if the
+    /// send operation finishes synchronously. Otherwise, awaits the completion of the entire send process.
+    /// </returns>
     private ValueTask SendSingleBuffer(byte[] buf, int pos, byte[]? tempBuf, CancellationToken ct)
     {
-        var sendTask = _socket.SendAsync(buf.AsMemory(0, pos), SocketFlags.None, ct);
+        var payload = buf.AsMemory(0, pos);
+        var sendTask = _socket.SendAsync(payload, SocketFlags.None, ct);
 
-        if (sendTask.IsCompletedSuccessfully)
+        // Start the sending first and only await if needed. On loopback or when the kernel send
+        // buffer has room, SendAsync often completes synchronously; returning a completed
+        // ValueTask here avoids building an async state machine for the common fast path.
+        if (!sendTask.IsCompletedSuccessfully)
         {
-            // Completed synchronously — no async state machine needed.
-            if (tempBuf is not null)
-                ArrayPool<byte>.Shared.Return(tempBuf);
-            return default;
+            return AwaitSendAllAndCleanup(sendTask, payload, tempBuf, ct);
         }
 
-        return AwaitSendAndCleanup(sendTask, tempBuf);
+        var sent = sendTask.Result;
+
+        if (sent != payload.Length)
+        {
+            return AwaitSendAllAndCleanup(sendTask, payload, tempBuf, ct);
+        }
+
+        if (tempBuf is not null)
+        {
+            ArrayPool<byte>.Shared.Return(tempBuf);
+        }
+
+        return default;
     }
 
-    private async ValueTask AwaitSendAndCleanup(ValueTask<int> sendTask, byte[]? tempBuf)
+    private async ValueTask AwaitSendAllAndCleanup(ValueTask<int> sendTask, ReadOnlyMemory<byte> payload, byte[]? tempBuf, CancellationToken ct)
     {
         try
         {
-            await sendTask;
+            var sent = await sendTask;
+            await SendRemainingAsync(payload, sent, ct);
         }
         finally
         {
@@ -133,34 +164,81 @@ public sealed class HttpResponseWriter : IDisposable
 
     private ValueTask SendHeadersThenBody(byte[] buf, int pos, ReadOnlyMemory<byte> body, byte[]? tempBuf, CancellationToken ct)
     {
-        var headerSend = _socket.SendAsync(buf.AsMemory(0, pos), SocketFlags.None, ct);
+        var headerBlock = buf.AsMemory(0, pos);
+        var headerSend = _socket.SendAsync(headerBlock, SocketFlags.None, ct);
 
+        // Same idea here: keep the synchronous-success path allocation-free and only fall
+        // back to async continuations when the socket cannot flush the whole payload inline.
         if (headerSend.IsCompletedSuccessfully)
         {
-            // Headers sent synchronously — now send body.
-            if (tempBuf is not null)
-                ArrayPool<byte>.Shared.Return(tempBuf);
-            var bodySend = _socket.SendAsync(body, SocketFlags.None, ct);
-            return bodySend.IsCompletedSuccessfully ? default : AwaitSend(bodySend);
+            var sent = headerSend.Result;
+
+            if (sent == headerBlock.Length)
+            {
+                if (tempBuf is not null)
+                    ArrayPool<byte>.Shared.Return(tempBuf);
+
+                return SendBody(body, ct);
+            }
         }
 
-        return AwaitHeadersThenBody(headerSend, body, tempBuf, ct);
+        return AwaitHeadersThenBody(headerSend, headerBlock, body, tempBuf, ct);
     }
 
-    private static async ValueTask AwaitSend(ValueTask<int> task) => await task;
+    private ValueTask SendBody(ReadOnlyMemory<byte> body, CancellationToken ct)
+    {
+        var bodySend = _socket.SendAsync(body, SocketFlags.None, ct);
 
-    private async ValueTask AwaitHeadersThenBody(ValueTask<int> headerSend, ReadOnlyMemory<byte> body, byte[]? tempBuf, CancellationToken ct)
+        if (!bodySend.IsCompletedSuccessfully)
+        {
+            return AwaitSendAll(bodySend, body, ct);
+        }
+
+        var sent = bodySend.Result;
+        return sent == body.Length ? default : AwaitSendAll(bodySend, body, ct);
+    }
+
+    private async ValueTask AwaitHeadersThenBody(ValueTask<int> headerSend, ReadOnlyMemory<byte> headerBlock, ReadOnlyMemory<byte> body,
+                                                 byte[]? tempBuf, CancellationToken ct)
     {
         try
         {
-            await headerSend;
+            var sent = await headerSend;
+            await SendRemainingAsync(headerBlock, sent, ct);
         }
         finally
         {
             if (tempBuf is not null)
+            {
                 ArrayPool<byte>.Shared.Return(tempBuf);
+            }
         }
-        await _socket.SendAsync(body, SocketFlags.None, ct);
+
+        await SendBody(body, ct);
+    }
+
+    private ValueTask AwaitSendAll(ValueTask<int> sendTask, ReadOnlyMemory<byte> payload, CancellationToken ct) =>
+        AwaitSendAllCore(sendTask, payload, ct);
+
+    private async ValueTask AwaitSendAllCore(ValueTask<int> sendTask, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    {
+        var sent = await sendTask;
+        await SendRemainingAsync(payload, sent, ct);
+    }
+
+    private async ValueTask SendRemainingAsync(ReadOnlyMemory<byte> payload, int bytesSent, CancellationToken ct)
+    {
+        while (bytesSent < payload.Length)
+        {
+            var sent = await _socket.SendAsync(payload[bytesSent..], SocketFlags.None, ct);
+
+            if (sent <= 0)
+            {
+                throw new SocketException((int)SocketError.ConnectionReset);
+            }
+
+            bytesSent += sent;
+        }
     }
 
     // Pre-cached header prefix for the most common case: 200 OK + keep-alive.
@@ -309,6 +387,7 @@ public sealed class HttpResponseWriter : IDisposable
         404 => "Not Found"u8,
         405 => "Method Not Allowed"u8,
         500 => "Internal Server Error"u8,
+        501 => "Not Implemented"u8,
         503 => "Service Unavailable"u8,
         _   => "Unknown"u8,
     };

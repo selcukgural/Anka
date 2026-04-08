@@ -1,57 +1,52 @@
 # Anka
 
-> **Version: v0.0.1**
+[![NuGet](https://img.shields.io/nuget/v/Anka.svg)](https://www.nuget.org/packages/Anka)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![.NET 8+](https://img.shields.io/badge/.NET-8.0%2B-512BD4)](https://dotnet.microsoft.com)
+&nbsp; [Türkçe →](README.tr.md)
 
-Anka is a minimal HTTP/1.x server library for .NET 8+, written from scratch using raw sockets and `System.IO.Pipelines`, with a **zero-allocation** design. It is fully compatible with AOT (Ahead-of-Time) compilation.
-
----
-
-## Table of Contents
-
-1. [Features and Limitations](#features-and-limitations)
-2. [Quick Start](#quick-start)
-3. [Architecture Overview](#architecture-overview)
-4. [Application Lifecycle](#application-lifecycle) — step by step from start to finish
-5. [Class Reference — Public API](#class-reference--public-api)
-6. [Class Reference — Internal](#class-reference--internal)
-7. [Memory Model](#memory-model)
-8. [Performance Profile](#performance-profile)
-9. [Project Structure](#project-structure)
+Minimal HTTP/1.x server library for .NET 8+, built for **Native AOT** with a focus on minimising cold-start time and keeping steady-state allocation at zero.
 
 ---
 
-## Features and Limitations
+## Installation
 
-### ✅ Supported
+```shell
+dotnet add package Anka
+```
 
-| Area                  | Detail                                                                                                                     |
-|-----------------------|----------------------------------------------------------------------------------------------------------------------------|
-| **HTTP Versions**     | HTTP/1.0, HTTP/1.1                                                                                                         |
-| **HTTP Methods**      | GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, TRACE, CONNECT                                                               |
-| **Keep-Alive**        | HTTP/1.1 on by default; disabled with `Connection: close`. HTTP/1.0 off by default; enabled with `Connection: keep-alive`. |
-| **Request Body**      | Body specified by `Content-Length` is read in full                                                                         |
-| **Request Headers**   | Up to 64 headers; names are normalised to lowercase                                                                        |
-| **Response**          | Status code, body, Content-Type, Content-Length, Connection header                                                         |
-| **Response Body**     | ≤ 4096 bytes: inlined into the header buffer (single `SendAsync`). > 4096 bytes: separate `SendAsync`                      |
-| **Concurrency**       | Each connection runs as an independent `Task`; the accept loop never waits on any connection                               |
-| **Backpressure**      | `PipeOptions.pauseWriterThreshold = 64 KB`, `resumeWriterThreshold = 32 KB`                                                |
-| **AOT Compatibility** | `PublishAot=true`, `IsAotCompatible=true` — no reflection, no generics limitations                                         |
-| **Memory**            | `ArrayPool<byte>` + CAS single-slot `HttpRequestPool` → **0 B** heap allocation per request                                |
+[![NuGet](https://img.shields.io/nuget/v/Anka.svg)](https://www.nuget.org/packages/Anka)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
 
-### ❌ Not Supported
+Requires .NET 8 SDK or later.
 
-| Area                          | Detail                                                                                          |
-|-------------------------------|-------------------------------------------------------------------------------------------------|
-| **HTTP/2 & HTTP/3**           | HTTP/1.x only                                                                                   |
-| **TLS / HTTPS**               | No SSL/TLS wrapper                                                                              |
-| **Chunked Transfer Encoding** | `Transfer-Encoding: chunked` is not parsed; body is ignored                                     |
-| **Request URL Decoding**      | `%xx` percent-encoding and `+`→space conversion are not performed                               |
-| **Routing**                   | No built-in route matcher / middleware system                                                   |
-| **WebSocket**                 | No upgrade flow                                                                                 |
-| **Trailer Headers**           | No HTTP/1.1 trailer support                                                                     |
-| **100-Continue**              | `Expect: 100-continue` is not answered                                                          |
-| **IPv6**                      | IPv4 only (`AddressFamily.InterNetwork`)                                                        |
-| **Graceful Shutdown**         | Active connections are not awaited when the `CancellationToken` is cancelled; accept loop stops |
+---
+
+## Why Anka
+
+Modern .NET applications typically pay 100–300 ms of JIT warmup on every cold start. In serverless and container environments, every millisecond costs money and latency. Anka is designed around one idea:
+
+> **Publish as a Native AOT binary. Be ready to serve the first request in under 25 ms.**
+
+| | Anka (Native AOT) | Kestrel (JIT) |
+|---|---:|---:|
+| Time to listen | 411 ms ¹ | 203 ms |
+| **Time to ready** | **2.3 ms** | **140 ms** |
+| First response | 20 ms | 26 ms |
+| Startup allocation | **124.5 KB** | 2.5 MB |
+| RSS at steady state | **~15 MB** | ~98 MB |
+
+¹ Anka creates a fresh `Socket`; Kestrel reuses existing OS handles.
+
+To achieve this, Anka makes deliberate trade-offs:
+
+- **No middleware pipeline** — a single `RequestHandler` delegate handles every request
+- **No built-in routing** — path dispatch is left to user code (a `switch` expression is enough)
+- **HTTP/1.x only** — no HTTP/2, no TLS, no WebSocket
+- **Raw sockets** — `SocketAsyncEventArgs` + pooled 64 KB sliding receive window, no `System.IO.Pipelines`
+
+If you need the full ASP.NET Core feature set, use Kestrel. If you need a tiny, fast, zero-allocation HTTP listener for a Native AOT binary — Anka is for you.
 
 ---
 
@@ -78,6 +73,116 @@ Graceful shutdown with `Ctrl+C`.
 
 ---
 
+## Examples
+
+### Plain Text Response
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        var body = "Hello, World!"u8.ToArray();
+        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+    },
+    port: 8080);
+
+await server.StartAsync(cts.Token);
+```
+
+### JSON Response
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        var json = """{"message":"ok","version":"0.0.1"}"""u8.ToArray();
+        await res.WriteAsync(200, json, contentType: "application/json; charset=utf-8", cancellationToken: ct);
+    },
+    port: 8080);
+```
+
+### Reading Path and Query String
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        // req.Path   → "/search"
+        // req.Query  → "q=anka&limit=10"
+        var path = req.Path.ToString();
+        var query = req.Query.ToString();
+
+        var body = System.Text.Encoding.UTF8.GetBytes($"path={path} query={query}");
+        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+    },
+    port: 8080);
+```
+
+### Reading Request Headers
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        // Header names are normalised to lowercase
+        var ua = req.Headers.TryGetValue("user-agent", out var v) ? v.ToString() : "unknown";
+
+        var body = System.Text.Encoding.UTF8.GetBytes($"User-Agent: {ua}");
+        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+    },
+    port: 8080);
+```
+
+### Reading POST Body
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        // req.Body contains the full body (read via Content-Length)
+        var text = System.Text.Encoding.UTF8.GetString(req.Body.Span);
+
+        var echo = System.Text.Encoding.UTF8.GetBytes($"echo: {text}");
+        await res.WriteAsync(200, echo, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+    },
+    port: 8080);
+```
+
+### Simple Path-Based Routing
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        var path = req.Path.ToString();
+        var method = req.Method.ToString();
+
+        (int status, byte[] body, string ct2) = (path, method) switch
+        {
+            ("/", "GET")     => (200, "Welcome!"u8.ToArray(),           "text/plain; charset=utf-8"),
+            ("/ping", "GET") => (200, """{"pong":true}"""u8.ToArray(),  "application/json; charset=utf-8"),
+            _                => (404, "Not Found"u8.ToArray(),          "text/plain; charset=utf-8")
+        };
+
+        await res.WriteAsync(status, body, contentType: ct2, cancellationToken: ct);
+    },
+    port: 8080);
+```
+
+---
+
+## Table of Contents
+
+1. [Features and Limitations](#features-and-limitations)
+2. [Architecture Overview](#architecture-overview)
+3. [Class Reference — Public API](#class-reference--public-api)
+4. [Class Reference — Internal](#class-reference--internal)
+5. [Memory Model](#memory-model)
+6. [Performance Profile](#performance-profile)
+7. [Project Structure](#project-structure)
+
+---
+
 ## Architecture Overview
 
 ```
@@ -91,251 +196,27 @@ Graceful shutdown with `Ctrl+C`.
                         ┌────────────────▼─────────────────────────┐
                         │            Connection (internal)         │
                         │                                          │
-                        │   FillPipeAsync()   ReadPipeAsync()      │
-                        │   ┌─────────────┐  ┌────────────────┐    │
-                        │   │ Socket.Recv │  │ HttpParser     │    │
-                        │   │ → PipeWriter│  │  .TryParse()   │    │
-                        │   └──────┬──────┘  └───────┬────────┘    │
-                        │          │    Pipe         │             │
-                        │          └─────────────────┘             │
-                        │                    │                     │
-                        │          ┌─────────▼──────────┐          │
-                        │          │  RequestHandler()  │          │
-                        │          │  (user code)       │          │
-                        │          └─────────┬──────────┘          │
-                        │                    │                     │
-                        │          ┌─────────▼──────────┐          │
-                        │          │ HttpResponseWriter │          │
-                        │          │  .WriteAsync()     │          │
-                        │          └─────────┬──────────┘          │
-                        │                    │                     │
-                        │                    ▼ Socket.Send         │
+                        │  SocketReceiver.ReceiveAsync()           │
+                        │  → pooled 64 KB receive buffer           │
+                        │  → sliding parse window                  │
+                        │  → HttpParser.TryParse()                 │
+                        │  → RequestHandler()                      │
+                        │  → HttpResponseWriter.WriteAsync()       │
+                        │  → Socket.SendAsync()                    │
                         └──────────────────────────────────────────┘
 ```
 
 **Data Flow:**
 
 ```
-TCP bytes → PipeWriter → [Pipe buffer] → PipeReader
-         → HttpParser.ScanForComplete()  (Phase 1 — zero allocation)
-         → HttpParser.ParseCore()        (Phase 2 — 1-2 ArrayPool.Rent)
-         → HttpRequest                   (taken from pool)
-         → handler(request, response)    (user code)
-         → request.Return()              (buffers → ArrayPool, instance → pool)
+TCP bytes → SocketReceiver.ReceiveAsync()
+         → pooled receive buffer + sliding window
+         → HttpParser.TryParse()
+         → HttpRequest (rented once per connection, reused per request)
+         → handler(request, response)
+         → HttpResponseWriter.WriteAsync()
+         → Socket.SendAsync()
 ```
-
----
-
-## Application Lifecycle
-
-### Step 1 — Creating the Server
-
-```csharp
-new Server(handler, port: 8080)
-```
-
-The `Server` constructor:
-1. Port range check: `port < 1 || port > 65535` → throws `AnkaPortOutOfRageException`
-2. IP parse check: `IPAddress.TryParse(host)` fails → throws `AnkaArgumentException`
-3. `_endPoint = new IPEndPoint(ip, port)` — no socket yet
-
----
-
-### Step 2 — Server.StartAsync()
-
-```csharp
-await server.StartAsync(cancellationToken);
-```
-
-1. `Socket(InterNetwork, Stream, Tcp)` is created
-2. `socket.NoDelay = true` (Nagle algorithm disabled)
-3. `socket.ReuseAddress = true`
-4. `socket.Bind(_endPoint)` + `socket.Listen(backlog: 512)`
-5. `Console.WriteLine($"Listening on {_endPoint}")` is printed
-6. **Accept loop** starts:
-
-```csharp
-while (!cancellationToken.IsCancellationRequested)
-{
-    var client = await socket.AcceptAsync(cancellationToken);
-    _ = Connection.RunAsync(client, _handler, cancellationToken); // fire & forget
-}
-```
-
-`Connection.RunAsync` is called fire-and-forget for each accepted connection.  
-The acceptance loop **never** waits for a connection to finish.
-
----
-
-### Step 3 — Connection.RunAsync()
-
-```csharp
-Connection.RunAsync(socket, handler, cancellationToken)
-```
-
-1. `socket.NoDelay = true` (also set per-connection)
-2. `new Connection(socket, handler, cancellationToken)` is created
-3. `ExecuteAsync()` is called:
-
-```csharp
-await Task.WhenAll(FillPipeAsync(), ReadPipeAsync());
-// finally: socket.Close() + socket.Dispose()
-```
-
-Two async tasks run **concurrently**:
-
----
-
-### Step 4 — FillPipeAsync() — Socket → Pipe
-
-```
-Socket.ReceiveAsync → PipeWriter.GetMemory(4096) → Advance(bytesRead) → FlushAsync
-```
-
-- A memory block of at least 4096 bytes is requested on each iteration
-- `bytesRead == 0` → connection closed, loop ends
-- `flush.IsCompleted` → reader has stopped consuming the pipe (slow client backpressure)
-- `OperationCanceledException` / `SocketException` → exits silently
-- `finally`: `PipeWriter.CompleteAsync()` → notifies the reader side
-
----
-
-### Step 5 — ReadPipeAsync() — Pipe → Parse → Handle
-
-```csharp
-var responseWriter = new HttpResponseWriter(socket);
-
-while (true)
-{
-    var result = await _pipe.Reader.ReadAsync(_cancellationToken);
-    // ...
-    if (HttpParser.TryParse(ref reader, out var request)) { ... }
-    // ...
-    _pipe.Reader.AdvanceTo(consumed, examined);
-}
-```
-
-Each `ReadAsync` call returns the current Pipe buffer.  
-`AdvanceTo(consumed, examined)`:
-- `consumed`: this many bytes were truly consumed
-- `examined`: this many bytes were inspected (but returned if insufficient)
-
-In keep-alive mode the loop waits for the next request.  
-`Connection: close` or HTTP/1.0 (without a keep-alive header) → `break` → connection closes.
-
----
-
-### Step 6 — HttpParser.TryParse() — Two-Phase Parse
-
-#### Phase 1: ScanForComplete (zero allocation)
-
-```
-advance over a copy of the reader (scanner):
-  1. Skip the request line (\r\n)
-  2. Scan header lines:
-     - Line starts with "c" and is >15 bytes? → TryExtractContentLength()
-     - Empty line (\r\n\r\n) → end of headers
-  3. If body present: reader.Remaining >= contentLength?
-```
-
-This phase **makes no copies** — it only advances a pointer. Returns `false` if data is not enough.
-
-#### Phase 2: ParseCore (1 or 2 ArrayPool.Rent)
-
-```
-buf = ArrayPool.Rent(headerWireBytes or min 256)
-req = HttpRequestPool.Rent()  ← take from pool
-req.Buffer = buf
-
-  ParseRequestLine():
-    METHOD SP path[?query] SP HTTP/x.y\r\n
-    → HttpMethodParser.Parse(methodSpan)
-    → HttpVersionParser.Parse(versionSpan)
-    → path copied to buf; req.SetPath(offset, length)
-    → query copied to buf; req.SetQuery(offset, length)
-
-  Headers loop:
-    Each \r\n-terminated line:
-      "Name: Value" → headers.Add(name, value)
-    Empty line → end
-
-  Body (contentLength > 0):
-    bodyBuf = ArrayPool.Rent(contentLength)
-    reader.TryCopyTo(bodyBuf)
-    req.BodyBuffer = bodyBuf
-    req.Body = bodyBuf.AsMemory(0, contentLength)
-
-  ComputeKeepAlive():
-    Inspect Connection header → determine IsKeepAlive
-
-  request = req
-  success = true
-```
-
-**On failure** (finally block):
-- `req != null` → `HttpRequestPool.Return(req)` → `Reset()` → both buffers returned to ArrayPool
-- `req == null` (before Rent() throws): `buf` + `bodyBuf` returned manually
-
----
-
-### Step 7 — Handler Invocation
-
-```csharp
-await _handler(request!, responseWriter, _cancellationToken);
-```
-
-User code at this point:
-- Reads `request.Method`, `request.Path`, `request.QueryString`, `request.Headers`, `request.Body`
-- Calls `response.WriteAsync(statusCode, body, contentType, keepAlive)`
-
----
-
-### Step 8 — HttpResponseWriter.WriteAsync()
-
-```
-buf = ArrayPool.Rent(512 + smallBodyThreshold)
-
-  WriteStatusLine()   → "HTTP/1.1 200 OK\r\n"
-  WriteLiteral()      → "Server: Anka\r\n"
-  WriteContentLength()→ "Content-Length: N\r\n"
-  WriteLiteral()      → "Connection: keep-alive\r\n" or "Connection: close\r\n"
-  (contentType)       → "Content-Type: ...\r\n"
-  span[pos++] = '\r'; span[pos++] = '\n'  ← end of headers
-
-  body <= 4096: body inlined → single SendAsync
-  body >  4096: headers sent, then body in a separate SendAsync
-```
-
-`finally`: `ArrayPool.Return(buf)`
-
----
-
-### Step 9 — request.Return()
-
-```csharp
-request!.Return(); // finally block inside Connection.ReadPipeAsync
-```
-
-`Return()` → `HttpRequestPool.Return(this)`:
-1. `req.Reset()`:
-   - `Buffer` → `ArrayPool.Return(Buffer)` → `Buffer = null`
-   - `BodyBuffer` → `ArrayPool.Return(BodyBuffer)` → `BodyBuffer = null`
-   - All fields zeroed (Method, Version, Path, Query, Headers, Body, IsKeepAlive)
-2. `Interlocked.CompareExchange(ref _slot, req, null)`:
-   - Slot empties: instance placed in pool (ready for the next request)
-   - Slot full: instance left for GC
-
----
-
-### Step 10 — Shutdown
-
-When `CancellationToken.Cancel()` is called:
-
-1. `socket.AcceptAsync` → throws `OperationCanceledException`
-2. `Server.StartAsync` catches it → `Console.WriteLine("Server shutting down.")`
-3. `using var socket` → dispose → server socket closes
-4. Active `Connection` tasks: `ReceiveAsync` in `FillPipeAsync` and `ReadAsync` in `ReadPipeAsync` share the same token → `OperationCanceledException` → exits silently
-5. Every `Connection.ExecuteAsync` finally block → `socket.Close()` + `socket.Dispose()`
 
 ---
 
@@ -521,19 +402,25 @@ Derives from `ArgumentOutOfRangeException`. Thrown when the port is outside the 
 
 Manages the lifecycle of each TCP connection.
 
-| Member                                 | Description                                                                                               |
-|----------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| `static RunAsync(socket, handler, ct)` | Single public entry point. Sets `socket.NoDelay=true`, creates a new `Connection`, runs `ExecuteAsync()`. |
-| `ExecuteAsync()`                       | Runs `Task.WhenAll(FillPipeAsync, ReadPipeAsync)`. `finally`: `socket.Close()` + `Dispose()`              |
-| `FillPipeAsync()`                      | Socket → PipeWriter. Continuous `ReceiveAsync` → `Advance` → `FlushAsync`.                                |
-| `ReadPipeAsync()`                      | PipeReader → `HttpParser.TryParse` → `handler` → `request.Return()`. Keep-alive loop lives here.          |
+| Member                                 | Description                                                                                                  |
+|----------------------------------------|--------------------------------------------------------------------------------------------------------------|
+| `static RunAsync(socket, handler, ct)` | Single public entry point. Sets `socket.NoDelay=true`, creates a new `Connection`, runs `ProcessAsync()`.   |
+| `ProcessAsync()`                       | Owns the receive loop, parser loop, handler dispatch, keep-alive lifecycle, and connection-scoped resources  |
+| Sliding receive window                 | Avoids compacting unread bytes after every request; compacts only when the receive tail is full              |
+| `finally` cleanup                      | Returns the `HttpRequest` to `HttpRequestPool`, returns pooled buffers, closes and disposes the socket       |
 
-**PipeOptions:**
-```
-pauseWriterThreshold:  64 KB  (slow reader → stop writing)
-resumeWriterThreshold: 32 KB  (when buffer drops to half → resume)
-useSynchronizationContext: false  (run on ThreadPool)
-```
+---
+
+### `SocketReceiver` (internal sealed)
+
+Zero-allocation socket receive wrapper. One instance per connection; must be `Dispose()`d on close.
+
+| Member                                 | Description                                                                                                                                                                      |
+|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ReceiveAsync(socket, buffer)`         | Returns a `ValueTask<int>`. Sync path: data already in kernel buffer → no allocation, no thread switch. Async path: OS I/O thread posts continuation to `ThreadPool` via `IValueTaskSource`. |
+| `Dispose()`                            | Disposes the underlying `SocketAsyncEventArgs`                                                                                                                                  |
+
+`RunContinuationsAsynchronously = true` on the internal `ManualResetValueTaskSourceCore<int>` ensures the OS kqueue/epoll I/O thread is never blocked by request-processing work.
 
 ---
 
@@ -559,6 +446,8 @@ Parses HTTP/1.x requests.
 |-----------------------------|-------------------------------------------------------------|
 | `Parse(ReadOnlySpan<byte>)` | Byte span → `HttpMethod` enum. Unknown → `Unknown`          |
 | `ToBytes(this HttpMethod)`  | `HttpMethod` enum → `ReadOnlySpan<byte>` (extension method) |
+
+The parser uses a short length/byte dispatch instead of chaining multiple `SequenceEqual` calls. For fixed ASCII method tokens this reduces repeated comparisons on the hot path and produces a simpler branch tree for the JIT.
 
 ---
 
@@ -587,52 +476,134 @@ CAS-based single-slot object pool. Lock-free, AOT-safe.
 ## Memory Model
 
 ```
-Memory movement per HTTP request:
+Memory movement per connection:
+
+  Connection.ProcessAsync()
+  ├── ArrayPool.Rent(64 KB)               ← receive buffer (reused across all requests on the connection)
+  ├── HttpRequestPool.Rent()              ← HttpRequest instance (reused across requests on the connection)
+  ├── HttpResponseWriter(socket)          ← connection-scoped response buffer
+  └── SocketReceiver()                    ← connection-scoped SocketAsyncEventArgs
+
+Memory movement per request:
 
   HttpParser.TryParse()
-  ├── ArrayPool.Rent(headerWireBytes)     ← buf: path + query + header names/values
-  ├── HttpRequestPool.Rent()              ← HttpRequest instance (from pool or new)
-  └── ArrayPool.Rent(contentLength)       ← bodyBuf (only if body present)
+  ├── Reuses request.Buffer when large enough
+  ├── Reuses request.BodyBuffer when large enough
+  └── Copies only path/query/header slices and any Content-Length body
 
-  handler() runs...
-
-  request.Return()
-  ├── ArrayPool.Return(buf)
-  ├── ArrayPool.Return(bodyBuf)           ← only if body present
-  └── HttpRequestPool._slot = req         ← place in single slot via CAS
-
-  HttpResponseWriter.WriteAsync()
-  ├── ArrayPool.Rent(512 + bodyThreshold) ← header buffer
-  └── ArrayPool.Return(buf)               ← finally
+Connection closes:
+  ├── HttpRequestPool.Return(request)
+  ├── ArrayPool.Return(receive buffer)
+  ├── SocketReceiver.Dispose()            ← disposes SocketAsyncEventArgs
+  └── HttpResponseWriter.Dispose()        ← returns response buffer
 ```
 
-**Result:** **0 heap allocations** for repeated requests (thanks to `ArrayPool` and the object pool).
+**Result:** repeated requests on an existing connection stay on an allocation-free fast path in the parser microbenchmarks, while connection startup still pays its one-time pooled buffer rentals.
 
 ---
 
 ## Performance Profile
 
-BenchmarkDotNet (Release / net10.0) measurements:
+> **Environment:** Apple M3 Max · 16 logical cores · macOS 26.3.1 · .NET 8.0.25 · Native AOT (osx-arm64)  
+> Microbenchmarks: `dotnet run --project Benchmark/Anka.Benchmark -c Release`  
+> End-to-end: `Test/LoadTest/Anka.Wrk.LoadTest` (wrk, 10 s per level, loopback)  
+> Full results: [`docs/throughput-results.md`](docs/throughput-results.md)
 
-| Scenario                         | Mean    | Gen0 | Allocated |
-|----------------------------------|---------|------|-----------|
-| SimpleGet (minimal GET)          | ~129 ns | 0    | **0 B**   |
-| GetWithManyHeaders (10 headers)  | ~380 ns | 0    | **0 B**   |
-| PostWithSmallBody (128 B body)   | ~160 ns | 0    | **0 B**   |
-| PostWithLargeBody (64 KB body)   | ~4.1 µs | 0    | **0 B**   |
-| Header lookup — hit (byte span)  | ~8 ns   | 0    | 0 B       |
-| Header lookup — miss (byte span) | ~5 ns   | 0    | 0 B       |
-| HttpMethod.Parse (GET)           | ~0.3 ns | 0    | 0 B       |
+---
 
-**Comparison with other servers (parsing layer):**
+### Startup Snapshot
 
-| Server / Layer         | Alloc / request | Notes                                        |
-|------------------------|-----------------|----------------------------------------------|
-| Anka                   | **0 B**         | ArrayPool + CAS pool                         |
-| ASP.NET Core (Kestrel) | ~300–600 B      | Framework overhead (routing, middleware, DI) |
-| HttpListener           | ~1–2 KB         | Managed objects per request                  |
+| | Anka (Native AOT) | Kestrel (JIT) |
+|---|---:|---:|
+| Time to listen | 411 ms | 203 ms |
+| Time to ready | **2.3 ms** | 140 ms |
+| First response | 20 ms | 26 ms |
+| Startup alloc | **124.5 KB** | 2.50 MB |
+| RSS after first response | **15.1 MB** | 97.9 MB |
 
-*Note: This comparison measures the parsing layer only. Kestrel's routing and middleware pipeline offer different trade-offs.*
+> Kestrel binds the port faster because it reuses existing OS handles; Anka is slower because it creates a fresh `Socket`. JIT warmup adds ~140 ms to Kestrel's "ready" time.
+
+---
+
+### Microbenchmarks — zero allocations throughout
+
+> Run with `dotnet run --project Benchmark/Anka.Benchmark -c Release`  
+> BenchmarkDotNet v0.15.8 · .NET 8.0.25 · Arm64 RyuJIT
+
+#### HTTP Parser
+
+> Parses a complete raw HTTP/1.x byte buffer into `HttpRequest` with no heap allocation.
+
+| Benchmark | Mean | Allocated |
+|---|---:|---:|
+| SimpleGet | 92.9 ns | **0 B** |
+| GetWithManyHeaders (10 headers) | 420.0 ns | **0 B** |
+| PostWithSmallBody (256 B body) | 244.6 ns | **0 B** |
+| PostWithLargeBody (64 KB body) | 1,651 ns | **0 B** |
+
+#### HTTP Headers
+
+> `HttpHeaders` is an inline-array struct — no heap allocation on add or lookup.
+
+| Benchmark | Mean | Allocated |
+|---|---:|---:|
+| Add_TenHeaders | 75.2 ns | **0 B** |
+| TryGetValue — byte span, first entry | 84.8 ns | **0 B** |
+| TryGetValue — byte span, last entry | 94.3 ns | **0 B** |
+| TryGetValue — byte span, missing | 92.7 ns | **0 B** |
+| TryGetValue — string, case-insensitive | 94.6 ns | **0 B** |
+
+#### HTTP Method Parser
+
+> Byte-span trie — common verbs resolve in sub-nanosecond time.
+
+| Method | Mean |
+|---|---:|
+| GET | 0.71 ns |
+| POST | 0.99 ns |
+| PUT | 0.71 ns |
+| HEAD | 0.98 ns |
+| PATCH | 1.32 ns |
+| DELETE | 1.57 ns |
+| OPTIONS | 1.83 ns |
+| CONNECT | 1.90 ns |
+
+#### HTTP Version Parser
+
+| Version | Mean |
+|---|---:|
+| HTTP/1.1 | 0.09 ns |
+| HTTP/1.0 | 0.21 ns |
+
+---
+
+### End-to-End Throughput — Framework Tests (wrk · c = 400)
+
+> No database. Raw HTTP pipeline throughput on loopback.
+
+| Scenario | Anka (AOT) req/s | Kestrel (JIT) req/s |
+|---|---:|---:|
+| Plain Text GET | 133,000 | 141,700 |
+| JSON API GET | 131,600 | 140,400 |
+| GET w/ Multiple Headers | 133,300 | 140,900 |
+| POST Echo (256 B body) | 127,100 | 131,200 |
+| Large Response GET (~2 KB) | 129,800 | 135,700 |
+
+> Anka and Kestrel deliver comparable throughput on loopback. Kestrel's JIT-generated native code edges ahead at high concurrency due to optimisations that are not available to the AOT compiler. Anka's advantage is memory: **~15 MB RSS** vs **~98 MB** at steady state, and near-zero startup allocation (124.5 KB vs 2.5 MB).
+
+---
+
+### End-to-End Throughput — TechEmpower-Style DB Tests (PostgreSQL · peak req/s)
+
+| Scenario | Anka (AOT) | Kestrel (JIT) |
+|---|---:|---:|
+| Single DB Query | 23,500 | 24,500 |
+| Multiple Queries (20) | 1,300 | 1,300 |
+| Fortunes | 22,300 | 23,400 |
+| DB Updates (20) | 622 | 629 |
+| Cached Queries (100) | 107,200 | 145,600 |
+
+> DB-bound tests are limited by PostgreSQL connection pool saturation, not by the HTTP layer. Per-concurrency-level detail tables are in [`docs/throughput-results.md`](docs/throughput-results.md).
 
 ---
 
@@ -655,11 +626,12 @@ Anka/
 │       │   ├── RequestHandler.cs    (delegate definition)
 │       │   └── Server.cs            (public entry point)
 │       ├── Internal/              ← Implementation details (internal)
-│       │   ├── Connection.cs        (socket lifecycle + pipe management)
+│       │   ├── Connection.cs        (socket lifecycle + sliding receive window)
 │       │   ├── HttpMethodParser.cs  (byte span → HttpMethod enum)
 │       │   ├── HttpParser.cs        (two-phase HTTP/1.x parser)
 │       │   ├── HttpRequestPool.cs   (CAS single-slot object pool)
-│       │   └── HttpVersionParser.cs (byte span → HttpVersion enum)
+│       │   ├── HttpVersionParser.cs (byte span → HttpVersion enum)
+│       │   └── SocketReceiver.cs    (zero-alloc SocketAsyncEventArgs + IValueTaskSource)
 │       └── Exceptions/
 │           ├── AnkaArgumentException.cs
 │           └── AnkaPortOutOfRageException.cs
@@ -667,7 +639,7 @@ Anka/
 ├── Anka.Console/                  ← Sample application
 │   └── Program.cs                   (Hello World server on :8080)
 │
-├── Anka.Test/                     ← xUnit tests (108 tests)
+├── Anka.Test/                     ← xUnit tests
 │   ├── HttpHeadersTests.cs
 │   ├── HttpMethodParserTests.cs
 │   ├── HttpParserTests.cs
@@ -675,6 +647,10 @@ Anka/
 │   ├── HttpVersionParserTests.cs
 │   └── ServerTests.cs
 │
+├── Test/LoadTest/
+│   ├── Anka.HttpConsole/          ← Native AOT load-test target
+│   ├── Kestrel.HttpConsole/       ← Minimal ASP.NET Core comparison target
+│   └── Anka.Wrk.LoadTest/         ← wrk-based startup + throughput harness
 └── Anka.Benchmark/                ← BenchmarkDotNet micro-benchmarks
     ├── HttpHeadersBenchmarks.cs
     ├── HttpMethodParserBenchmarks.cs
@@ -689,29 +665,18 @@ Anka/
 ### Running Tests
 
 ```bash
-dotnet test Anka.Test
+dotnet test Anka.slnx --nologo
 ```
 
 ### Running Benchmarks
 
 ```bash
-cd Anka.Benchmark
-dotnet run -c Release
+dotnet run --project Benchmark/Anka.Benchmark -c Release
 ```
 
 ### Load Testing
 
-Start the server:
+Run the comparison harness:
 ```bash
-cd Anka.Console
-dotnet run -c Release
-```
-
-Load test with external tools:
-```bash
-# wrk
-wrk -t4 -c100 -d30s http://localhost:8080/
-
-# hey
-hey -n 100000 -c 100 http://localhost:8080/
+dotnet run --project Test/LoadTest/Anka.Wrk.LoadTest --configuration Release
 ```

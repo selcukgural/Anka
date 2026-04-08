@@ -81,8 +81,10 @@ internal static class HttpParser
             ParseHeaderLine(headerLine, ref req.Headers);
         }
 
+        req.HasChunkedTransferEncoding = HasChunkedTransferEncoding(ref req.Headers);
+
         // Body
-        if (contentLength > 0)
+        if (!req.HasChunkedTransferEncoding && contentLength > 0)
         {
             if (parser.Remaining < contentLength)
             {
@@ -311,6 +313,40 @@ internal static class HttpParser
         }
 
         return version == HttpVersion.Http11;
+    }
+
+    /// <summary>
+    /// Determines whether the provided <paramref name="headers"/> indicate that chunked transfer encoding is being used.
+    /// </summary>
+    /// <param name="headers">The HTTP headers to inspect for the "transfer-encoding" header and its values.</param>
+    /// <returns>
+    /// <c>true</c> if the "transfer-encoding" header contains a value of "chunked", ignoring case; otherwise, <c>false</c>.
+    /// </returns>
+    private static bool HasChunkedTransferEncoding(ref HttpHeaders headers)
+    {
+        if (!headers.TryGetValue(HttpHeaderNames.TransferEncoding, out var value))
+        {
+            return false;
+        }
+
+        while (!value.IsEmpty)
+        {
+            var comma = value.IndexOf((byte)',');
+            var token = comma >= 0 ? value[..comma] : value;
+            if (AsciiEqualsIgnoreCase(token.Trim((byte)' '), "chunked"u8))
+            {
+                return true;
+            }
+
+            if (comma < 0)
+            {
+                break;
+            }
+
+            value = value[(comma + 1)..];
+        }
+
+        return false;
     }
 
 

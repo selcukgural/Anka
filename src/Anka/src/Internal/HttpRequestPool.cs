@@ -12,14 +12,14 @@ internal static class HttpRequestPool
 {
     private const int PoolSize = 32;
 
-    private static readonly HttpRequest?[] _slots = new HttpRequest?[PoolSize];
+    private static readonly HttpRequest?[] Slots = new HttpRequest?[PoolSize];
 
     /// <summary>Rents an <see cref="HttpRequest"/> from the pool, or creates a fresh instance if all slots are occupied.</summary>
     public static HttpRequest Rent()
     {
         for (var i = 0; i < PoolSize; i++)
         {
-            var req = Interlocked.Exchange(ref _slots[i], null);
+            var req = Interlocked.Exchange(ref Slots[i], null);
             if (req is not null)
             {
                 return req;
@@ -31,7 +31,7 @@ internal static class HttpRequestPool
 
     /// <summary>
     /// Resets <paramref name="req"/> and returns it to the first available pool slot.
-    /// If all slots are occupied the instance is discarded.
+    /// If all slots are occupied, the instance is discarded.
     /// </summary>
     public static void Return(HttpRequest req)
     {
@@ -39,7 +39,7 @@ internal static class HttpRequestPool
 
         for (var i = 0; i < PoolSize; i++)
         {
-            if (Interlocked.CompareExchange(ref _slots[i], req, null) is null)
+            if (Interlocked.CompareExchange(ref Slots[i], req, null) is null)
             {
                 return;
             }

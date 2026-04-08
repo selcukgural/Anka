@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using Anka.Exceptions;
 
 namespace Anka.Test;
@@ -80,5 +82,34 @@ public class ServerTests
     public void Constructor_EmptyHost_ThrowsAnkaArgumentException()
     {
         Assert.Throws<AnkaArgumentException>(() => new Server(NoopHandler, 8080, ""));
+    }
+
+    [Fact]
+    public async Task StartAsync_RaisesListeningStarted()
+    {
+        var port = GetFreePort();
+        var signal = new TaskCompletionSource<IPEndPoint>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var server = new Server(NoopHandler, port);
+        server.ListeningStarted += endPoint =>
+        {
+            signal.TrySetResult(endPoint);
+            cts.Cancel();
+        };
+
+        await server.StartAsync(cts.Token);
+
+        Assert.True(signal.Task.IsCompleted);
+        var endPoint = await signal.Task;
+        Assert.Equal(IPAddress.Loopback, endPoint.Address);
+        Assert.Equal(port, endPoint.Port);
+    }
+
+    private static int GetFreePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 }

@@ -70,10 +70,7 @@ public struct HttpHeaders
         /// </remarks>
         public readonly ushort ValueLength = valueLength;
     }
-
-    // ── Backing buffer ────────────────────────────────────────────────────────
-    // Owned by the parent HttpRequest. We never rent or return here.
-
+    
     /// <summary>
     /// The byte array that serves as the backing buffer for storing HTTP header names and values.
     /// This buffer is shared and rented by the parent HTTP request, with no internal allocation

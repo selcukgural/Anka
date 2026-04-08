@@ -117,6 +117,11 @@ public sealed class HttpRequest
     public bool IsKeepAlive { get; internal set; }
 
     /// <summary>
+    /// Indicates that the request used a chunked transfer-encoding body, which Anka does not support.
+    /// </summary>
+    internal bool HasChunkedTransferEncoding { get; set; }
+
+    /// <summary>
     /// Sets the path offset and length for the <see cref="HttpRequest"/> instance.
     /// This method updates the internal state to define the portion of the buffer
     /// representing the HTTP request path.
@@ -159,6 +164,7 @@ public sealed class HttpRequest
         Version      = HttpVersion.Unknown;
         Body         = default;
         IsKeepAlive  = false;
+        HasChunkedTransferEncoding = false;
         _pathStr     = null;
         _queryStr    = null;
         _pathOffset  = 0;

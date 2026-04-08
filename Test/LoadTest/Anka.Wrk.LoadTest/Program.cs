@@ -1,121 +1,162 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 using Anka.LoadTest;
 
 const int    port             = 18080;
-const int    kestrelPort      = 18081;
 const int    durationSeconds  = 10;
 const int    warmupSeconds    = 2;
-const int    wrkThreads       = 16;   // was 4 — use more threads so wrk isn't the ceiling
+const int    wrkThreads       = 16;
 var          concurrencyLevels = new[] { 1, 10, 50, 100, 400 };
+var          dbConcurrencyLevels = new[] { 8, 16, 32, 64, 128, 256 };
 
 var solutionRoot = FindSolutionRoot();
 var luaScript    = Path.Combine(AppContext.BaseDirectory, "scripts", "post_echo.lua");
 var rid          = GetRid();
 
 Console.ForegroundColor = ConsoleColor.Cyan;
-Console.WriteLine("=== Anka vs Kestrel Load Test ===");
+Console.WriteLine("=== Anka Load Test (TFB-Style) ===");
 Console.ResetColor();
 
-// ── Anka (Native AOT) ────────────────────────────────────────────────────────
+var targets = await PublishTargetsAsync();
+var benchmarkRuns = new List<ServerBenchmarkResult>(targets.Count);
 
-var ankaCsproj = Path.Combine(solutionRoot, "Anka.HttpConsole", "Anka.HttpConsole.csproj");
-var ankaExe    = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Anka.HttpConsole.exe" : "Anka.HttpConsole";
-var ankaPath   = Path.Combine(solutionRoot, "Anka.HttpConsole", "bin", "Release", "net8.0", rid, "publish", ankaExe);
-
-Console.ForegroundColor = ConsoleColor.Yellow;
-Console.WriteLine("\n── Anka (Native AOT) ──");
-Console.ResetColor();
-
-Console.Write($"Publishing Anka.HttpConsole (AOT, {rid})... ");
-var ankaPublish = await RunProcessAsync("dotnet", $"publish \"{ankaCsproj}\" -c Release -r {rid} /nologo");
-if (ankaPublish.ExitCode != 0)
+foreach (var target in targets)
 {
-    PrintError("FAILED\n" + ankaPublish.Output);
-    return 1;
+    Console.ForegroundColor = ConsoleColor.Yellow;
+    Console.WriteLine($"\n── {target.Name} ({target.RuntimeDescription}) ──");
+    Console.ResetColor();
+
+    benchmarkRuns.Add(await RunTargetBenchmarks(target, port));
 }
-Console.WriteLine("OK");
-
-var ankaData = await RunServerBenchmarks(ankaPath, port, "Anka");
-
-// ── Kestrel (JIT self-contained) ─────────────────────────────────────────────
-
-var kestrelCsproj = Path.Combine(solutionRoot, "Kestrel.HttpConsole", "Kestrel.HttpConsole.csproj");
-var kestrelExe    = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Kestrel.HttpConsole.exe" : "Kestrel.HttpConsole";
-var kestrelPath   = Path.Combine(solutionRoot, "Kestrel.HttpConsole", "bin", "Release", "net8.0", rid, "publish", kestrelExe);
-
-Console.ForegroundColor = ConsoleColor.Yellow;
-Console.WriteLine("\n── Kestrel (JIT self-contained) ──");
-Console.ResetColor();
-
-Console.Write($"Publishing Kestrel.HttpConsole ({rid})... ");
-var kestrelPublish = await RunProcessAsync("dotnet",
-    $"publish \"{kestrelCsproj}\" -c Release -r {rid} -p:PublishSingleFile=true --self-contained /nologo");
-if (kestrelPublish.ExitCode != 0)
-{
-    PrintError("FAILED\n" + kestrelPublish.Output);
-    return 1;
-}
-Console.WriteLine("OK");
-
-var kestrelData = await RunServerBenchmarks(kestrelPath, kestrelPort, "Kestrel");
 
 // ── Report ───────────────────────────────────────────────────────────────────
 
-ReportWriter.Write(solutionRoot, ankaData, kestrelData, concurrencyLevels, durationSeconds);
+ReportWriter.Write(solutionRoot, benchmarkRuns, durationSeconds);
 return 0;
 
 
 // ── Local functions ───────────────────────────────────────────────────────────
 
-async Task<IReadOnlyList<(Scenario, IReadOnlyList<WrkResult>)>> RunServerBenchmarks(
-    string binaryPath, int serverPort, string label)
+async Task<IReadOnlyList<LaunchTarget>> PublishTargetsAsync()
+{
+    var targets = new List<LaunchTarget>();
+
+    var ankaCsproj = Path.Combine(solutionRoot, "Test", "LoadTest", "Anka.HttpConsole", "Anka.HttpConsole.csproj");
+    var ankaExe    = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Anka.HttpConsole.exe" : "Anka.HttpConsole";
+    var ankaPath   = Path.Combine(solutionRoot, "Test", "LoadTest", "Anka.HttpConsole", "bin", "Release", "net8.0", rid, "publish", ankaExe);
+
+    Console.Write($"Publishing Anka.HttpConsole (AOT, {rid})... ");
+    var ankaPublish = await RunProcessAsync("dotnet", $"publish \"{ankaCsproj}\" -c Release -r {rid} /nologo");
+    if (ankaPublish.ExitCode != 0)
+    {
+        PrintError("FAILED\n" + ankaPublish.Output);
+        throw new InvalidOperationException("Anka.HttpConsole publish failed.");
+    }
+    Console.WriteLine("OK");
+    targets.Add(new LaunchTarget("Anka", $"Native AOT ({rid})", ankaPath, port.ToString(CultureInfo.InvariantCulture)));
+
+    var kestrelCsproj = Path.Combine(solutionRoot, "Test", "LoadTest", "Kestrel.HttpConsole", "Kestrel.HttpConsole.csproj");
+    var kestrelDll    = Path.Combine(solutionRoot, "Test", "LoadTest", "Kestrel.HttpConsole", "bin", "Release", "net8.0", "publish", "Kestrel.HttpConsole.dll");
+
+    Console.Write("Publishing Kestrel.HttpConsole (Release)... ");
+    var kestrelPublish = await RunProcessAsync("dotnet", $"publish \"{kestrelCsproj}\" -c Release /nologo");
+    if (kestrelPublish.ExitCode != 0)
+    {
+        PrintError("FAILED\n" + kestrelPublish.Output);
+        throw new InvalidOperationException("Kestrel.HttpConsole publish failed.");
+    }
+    Console.WriteLine("OK");
+    targets.Add(new LaunchTarget("Kestrel", "ASP.NET Core / JIT", "dotnet", $"\"{kestrelDll}\" {port.ToString(CultureInfo.InvariantCulture)}"));
+
+    return targets;
+}
+
+async Task<ServerBenchmarkResult> RunTargetBenchmarks(LaunchTarget target, int serverPort)
 {
     var baseUrl = $"http://127.0.0.1:{serverPort}";
+
+    var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
+                ?? "Host=localhost;Database=benchmark;Username=benchmarkdbuser;Password=benchmarkdbpass";
+
+    var outputBuffer = new StringBuilder();
+    var listenTcs = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var startupMetricsTcs = new TaskCompletionSource<(double ReadyMs, long AllocatedBytes)>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var startupStopwatch = Stopwatch.StartNew();
 
     var serverProc = new Process
     {
         StartInfo = new ProcessStartInfo
         {
-            FileName               = binaryPath,
-            Arguments              = serverPort.ToString(),
+            FileName               = target.Command,
+            Arguments              = target.Arguments,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
             UseShellExecute        = false,
         },
     };
+    serverProc.StartInfo.Environment["DATABASE_URL"] = dbUrl;
+    serverProc.OutputDataReceived += (_, e) => HandleServerOutputLine(e.Data, outputBuffer, listenTcs, startupMetricsTcs, startupStopwatch);
+    serverProc.ErrorDataReceived  += (_, e) => HandleServerOutputLine(e.Data, outputBuffer, listenTcs, startupMetricsTcs, startupStopwatch);
     serverProc.Start();
+    serverProc.BeginOutputReadLine();
+    serverProc.BeginErrorReadLine();
 
-    Console.Write($"Waiting for {label} on port {serverPort}... ");
-    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
-    var ready = false;
-    for (var attempt = 0; attempt < 30; attempt++)
+    Console.Write($"Waiting for {target.Name} on port {serverPort}... ");
+    while (!listenTcs.Task.IsCompleted)
     {
-        await Task.Delay(300);
-        try
+        if (serverProc.HasExited)
         {
-            var resp = await http.GetAsync($"{baseUrl}/health");
-            if (resp.IsSuccessStatusCode) { ready = true; break; }
+            PrintError($"FAILED\n{outputBuffer}");
+            throw new InvalidOperationException($"{target.Name} exited before it started listening.");
         }
-        catch { /* not up yet */ }
+
+        if (startupStopwatch.Elapsed > TimeSpan.FromSeconds(30))
+        {
+            try { serverProc.Kill(entireProcessTree: true); } catch { /* ignore */ }
+            PrintError($"TIMEOUT\n{outputBuffer}");
+            throw new InvalidOperationException($"{target.Name} did not start listening within the timeout.");
+        }
+
+        await Task.Delay(50);
     }
 
-    if (!ready)
-    {
-        PrintError($"TIMEOUT — {label} did not start.");
-        serverProc.Kill(entireProcessTree: true);
-        throw new InvalidOperationException($"{label} failed to start.");
-    }
+    var timeToListenMs = await listenTcs.Task;
+    var firstResponseMs = await MeasureFirstResponseAsync(baseUrl, serverProc, outputBuffer);
+    serverProc.Refresh();
+
+    var startupMetrics = await TryGetStartupMetricsAsync(startupMetricsTcs.Task);
+    var startup = new StartupMetrics(
+        TimeToListenMs:    timeToListenMs,
+        TimeToReadyMs:     startupMetrics?.ReadyMs ?? timeToListenMs,
+        FirstResponseMs:   firstResponseMs,
+        StartupAllocatedBytes: startupMetrics?.AllocatedBytes ?? 0,
+        WorkingSetMb:      serverProc.WorkingSet64 / (1024.0 * 1024.0));
+
     Console.WriteLine("OK");
+    PrintStartupMetrics(startup);
 
     Console.Write($"Warming up ({warmupSeconds}s)... ");
     await WrkRunner.RunAsync($"{baseUrl}/plain", connections: 10, durationSeconds: warmupSeconds, threads: 4);
     Console.WriteLine("done");
     Console.WriteLine();
 
+    var frameworkData = await RunScenarioSet(baseUrl, Scenarios.Framework, concurrencyLevels);
+    var dbData        = await RunScenarioSet(baseUrl, Scenarios.Database, dbConcurrencyLevels);
+
+    try { serverProc.Kill(entireProcessTree: true); } catch { /* already stopped */ }
+    return new ServerBenchmarkResult(target, startup, frameworkData, dbData);
+}
+
+async Task<IReadOnlyList<(Scenario, IReadOnlyList<WrkResult>)>> RunScenarioSet(
+    string baseUrl,
+    IReadOnlyList<Scenario> scenarios,
+    int[] concLevels)
+{
     var data = new List<(Scenario, IReadOnlyList<WrkResult>)>();
 
-    foreach (var scenario in Scenarios.All)
+    foreach (var scenario in scenarios)
     {
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine($"── {scenario.Name} ──");
@@ -123,13 +164,13 @@ async Task<IReadOnlyList<(Scenario, IReadOnlyList<WrkResult>)>> RunServerBenchma
 
         var results = new List<WrkResult>();
 
-        foreach (var c in concurrencyLevels)
+        foreach (var c in concLevels)
         {
             Console.Write($"  c={c,4}  ");
 
-            var lua = scenario.Path == "/echo" ? luaScript : null;
+            var lua = scenario.Path == "/echo" ? luaScript : scenario.LuaScript;
             var r   = await WrkRunner.RunAsync(
-                scenario.Url(serverPort),
+                $"{baseUrl}{scenario.Path}",
                 connections:     c,
                 durationSeconds: durationSeconds,
                 threads:         wrkThreads,
@@ -143,7 +184,6 @@ async Task<IReadOnlyList<(Scenario, IReadOnlyList<WrkResult>)>> RunServerBenchma
         Console.WriteLine();
     }
 
-    try { serverProc.Kill(entireProcessTree: true); } catch { /* already stopped */ }
     return data;
 }
 
@@ -160,14 +200,148 @@ static void PrintRow(WrkResult r)
                : r.RequestsPerSec >= 1_000     ? $"{r.RequestsPerSec / 1_000:F1}k req/s"
                :                                 $"{r.RequestsPerSec:F0} req/s";
 
-    var errColor = r.ErrorPct > 0 ? ConsoleColor.Red : ConsoleColor.Green;
-
-    Console.ForegroundColor = ConsoleColor.White;
-    Console.Write($"{rpsStr,14}  avg {r.LatencyAvgMs:F2} ms  p99 {r.P99Ms:F2} ms  ");
+    var errColor = r.ErrorPct > 0 ? ConsoleColor.Red : ConsoleColor.DarkCyan;
+    
+    Console.ForegroundColor = ConsoleColor.DarkCyan;
+    Console.Write($"{rpsStr,20}  avg {r.LatencyAvgMs:F2} ms  p99 {r.P99Ms:F2} ms  p99.9 {r.P999Ms:F2} ms  ");
     Console.ForegroundColor = errColor;
     Console.Write($"{r.TransferMbSec:F2} MB/s  err {r.ErrorPct:F1}%");
     Console.ResetColor();
     Console.WriteLine();
+}
+
+static void PrintStartupMetrics(StartupMetrics startup)
+{
+    Console.ForegroundColor = ConsoleColor.DarkCyan;
+    Console.WriteLine(
+        $"  startup listen {startup.TimeToListenMs:F2} ms  ready {startup.TimeToReadyMs:F2} ms  first {startup.FirstResponseMs:F2} ms  alloc {FormatBytes(startup.StartupAllocatedBytes)}  rss {startup.WorkingSetMb:F2} MB");
+    Console.ResetColor();
+}
+
+static void HandleServerOutputLine(
+    string? line,
+    StringBuilder outputBuffer,
+    TaskCompletionSource<double> listenTcs,
+    TaskCompletionSource<(double ReadyMs, long AllocatedBytes)> startupMetricsTcs,
+    Stopwatch startupStopwatch)
+{
+    if (string.IsNullOrWhiteSpace(line))
+    {
+        return;
+    }
+
+    lock (outputBuffer)
+    {
+        // Cap at 1 MB to prevent runaway server logging from causing an OOM in the
+        // orchestrator. A server that emits per-request logs at high concurrency can
+        // produce hundreds of MB; we only need the first few lines for diagnostics.
+        if (outputBuffer.Length < 1024 * 1024)
+        {
+            outputBuffer.AppendLine(line);
+        }
+    }
+
+    if (line.StartsWith("Listening on ", StringComparison.OrdinalIgnoreCase))
+    {
+        listenTcs.TrySetResult(startupStopwatch.Elapsed.TotalMilliseconds);
+    }
+
+    if (TryParseStartupMetrics(line, out var readyMs, out var allocatedBytes))
+    {
+        startupMetricsTcs.TrySetResult((readyMs, allocatedBytes));
+    }
+}
+
+static bool TryParseStartupMetrics(string line, out double readyMs, out long allocatedBytes)
+{
+    readyMs = 0;
+    allocatedBytes = 0;
+
+    if (!line.StartsWith("[startup-metrics] ", StringComparison.Ordinal))
+    {
+        return false;
+    }
+
+    var parts = line["[startup-metrics] ".Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length < 2)
+    {
+        return false;
+    }
+
+    foreach (var part in parts)
+    {
+        var separatorIndex = part.IndexOf('=');
+        if (separatorIndex <= 0)
+        {
+            continue;
+        }
+
+        var key = part[..separatorIndex];
+        var value = part[(separatorIndex + 1)..];
+
+        if (key == "ready_ms")
+        {
+            _ = double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out readyMs);
+        }
+        else if (key == "allocated_bytes")
+        {
+            _ = long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out allocatedBytes);
+        }
+    }
+
+    return readyMs > 0 || allocatedBytes > 0;
+}
+
+static async Task<double> MeasureFirstResponseAsync(string baseUrl, Process serverProc, StringBuilder outputBuffer)
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+
+    for (var attempt = 0; attempt < 20; attempt++)
+    {
+        var sw = Stopwatch.StartNew();
+
+        try
+        {
+            using var resp = await http.GetAsync($"{baseUrl}/health");
+            sw.Stop();
+            if (resp.IsSuccessStatusCode)
+            {
+                return sw.Elapsed.TotalMilliseconds;
+            }
+        }
+        catch when (!serverProc.HasExited)
+        {
+            // The server may have started listening just before the app pipeline became ready.
+        }
+
+        if (serverProc.HasExited)
+        {
+            PrintError($"FAILED\n{outputBuffer}");
+            throw new InvalidOperationException("Server exited before responding to the first health request.");
+        }
+
+        await Task.Delay(50);
+    }
+
+    PrintError($"TIMEOUT\n{outputBuffer}");
+    throw new InvalidOperationException("Timed out waiting for the first health response.");
+}
+
+static async Task<(double ReadyMs, long AllocatedBytes)?> TryGetStartupMetricsAsync(Task<(double ReadyMs, long AllocatedBytes)> startupMetricsTask)
+{
+    var completed = await Task.WhenAny(startupMetricsTask, Task.Delay(1000));
+    return completed == startupMetricsTask ? await startupMetricsTask : null;
+}
+
+static string FormatBytes(long bytes)
+{
+    return bytes switch
+    {
+        <= 0                => "—",
+        < 1024              => $"{bytes} B",
+        < 1024 * 1024       => $"{bytes / 1024.0:F1} KB",
+        _                   => $"{bytes / (1024.0 * 1024.0):F2} MB"
+    };
 }
 
 static async Task<(int ExitCode, string Output)> RunProcessAsync(string fileName, string args)

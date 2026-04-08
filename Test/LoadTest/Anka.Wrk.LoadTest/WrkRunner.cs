@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace Anka.LoadTest;
@@ -97,6 +98,7 @@ internal static partial class WrkRunner
         var latencyAvgMs = ParseLatencyMs(LatencyAvgPattern, output);
         var transferMbs  = ParseTransferMbs(TransferPattern, output);
         var p99          = ParsePercentileMs(LatencyPercentilePattern, output, 99.0);
+        var p999         = ParsePercentileMs(LatencyPercentilePattern, output, 99.9);
         var p90          = ParsePercentileMs(LatencyPercentilePattern, output, 90.0);
         var p50          = ParsePercentileMs(LatencyPercentilePattern, output, 50.0);
 
@@ -110,6 +112,7 @@ internal static partial class WrkRunner
             P50Ms:         p50,
             P90Ms:         p90,
             P99Ms:         p99,
+            P999Ms:        p999,
             TransferMbSec: transferMbs,
             RawOutput:     output);
     }
@@ -117,20 +120,20 @@ internal static partial class WrkRunner
     private static double ParseDouble(Regex re, string text, int group)
     {
         var m = re.Match(text);
-        return m.Success && double.TryParse(m.Groups[group].Value, out var v) ? v : 0;
+        return m.Success && double.TryParse(m.Groups[group].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
     }
 
     private static long ParseLong(Regex re, string text, int group)
     {
         var m = re.Match(text);
-        return m.Success && long.TryParse(m.Groups[group].Value, out var v) ? v : 0;
+        return m.Success && long.TryParse(m.Groups[group].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0;
     }
 
     private static double ParseLatencyMs(Regex re, string text)
     {
         var m = re.Match(text);
         if (!m.Success) return 0;
-        if (!double.TryParse(m.Groups[1].Value, out var val)) return 0;
+        if (!double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var val)) return 0;
         return ToMs(val, m.Groups[2].Value);
     }
 
@@ -138,7 +141,7 @@ internal static partial class WrkRunner
     {
         var m = re.Match(text);
         if (!m.Success) return 0;
-        if (!double.TryParse(m.Groups[1].Value, out var val)) return 0;
+        if (!double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var val)) return 0;
         return m.Groups[2].Value switch
         {
             "GB" => val * 1024,
@@ -156,7 +159,7 @@ internal static partial class WrkRunner
         var bestMs   = 0.0;
         foreach (Match m in re.Matches(text))
         {
-            if (!double.TryParse(m.Groups[1].Value, out var pct)) continue;
+            if (!double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct)) continue;
             var diff = Math.Abs(pct - targetPct);
 
             if (!(diff < best))
@@ -165,7 +168,7 @@ internal static partial class WrkRunner
             }
 
             best = diff;
-            if (double.TryParse(m.Groups[2].Value, out var val))
+            if (double.TryParse(m.Groups[2].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var val))
             {
                 bestMs = ToMs(val, m.Groups[3].Value);
             }

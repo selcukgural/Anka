@@ -7,7 +7,30 @@
         <PublishAot>true</PublishAot>
         <IsAotCompatible>true</IsAotCompatible>
         <VerifyReferenceAotCompatibility>true</VerifyReferenceAotCompatibility>
+
+        <!-- NuGet package metadata -->
+        <PackageId>Anka</PackageId>
+        <Version>0.0.1</Version>
+        <Authors>Selçuk Güral</Authors>
+        <Description>Minimal zero-allocation HTTP/1.x server for .NET 8+. Native AOT compatible. Built on raw sockets with a sliding receive window and pooled buffers for an allocation-free steady-state fast path.</Description>
+        <PackageTags>http;server;aot;native-aot;zero-allocation;high-performance;minimal;networking;tcp;http1</PackageTags>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <Copyright>Copyright (c) 2026 Selçuk Güral</Copyright>
+        <PackageProjectUrl>https://github.com/selcukgural/Anka</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/selcukgural/Anka.git</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <NoWarn>$(NoWarn);CS1591</NoWarn>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <IsPackable>true</IsPackable>
     </PropertyGroup>
+
+    <ItemGroup>
+        <!-- Include repository README in the NuGet package for the gallery page -->
+        <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
 
     <ItemGroup>
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">

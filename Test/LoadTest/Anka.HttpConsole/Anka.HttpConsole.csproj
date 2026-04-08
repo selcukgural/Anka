@@ -14,4 +14,8 @@
       <ProjectReference Include="..\..\..\src\Anka\Anka.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+      <PackageReference Include="Npgsql" Version="9.0.3" />
+    </ItemGroup>
+
 </Project>
