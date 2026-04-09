@@ -4,8 +4,9 @@ using System.Text;
 namespace Anka.LoadTest;
 
 /// <summary>
-/// Writes a self-contained Markdown benchmark report to <c>docs/throughput-results.md</c>
-/// relative to the solution root that is passed in.
+/// Writes a self-contained Markdown benchmark report to
+/// <c>docs/throughput-results-{os}-{date}.md</c> relative to the solution root.
+/// Each run produces a new file; existing results are never overwritten.
 /// </summary>
 internal static class ReportWriter
 {
@@ -16,7 +17,11 @@ internal static class ReportWriter
     {
         var docsDir = Path.Combine(solutionRoot, "docs");
         Directory.CreateDirectory(docsDir);
-        var outPath = Path.Combine(docsDir, "throughput-results.md");
+        var osSuffix = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "windows"
+                     : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)     ? "macos"
+                     :                                                         "linux";
+        var dateSuffix = DateTime.UtcNow.ToString("yyyy-MM-dd");
+        var outPath = Path.Combine(docsDir, $"throughput-results-{osSuffix}-{dateSuffix}.md");
 
         var sb = new StringBuilder();
 

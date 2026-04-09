@@ -18,7 +18,7 @@ public sealed class Server
     /// This field is initialized in the constructor using the provided host and port.
     /// It is used by the server socket to bind and start listening for incoming connections.
     /// </remarks>
-    private readonly IPEndPoint     _endPoint;
+    private readonly IPEndPoint _endPoint;
 
     /// <summary>
     /// Holds a reference to the <see cref="RequestHandler"/> delegate, which is responsible for
@@ -29,6 +29,7 @@ public sealed class Server
     /// It is used internally to process client connections and execute the request handling logic.
     /// </remarks>
     private readonly RequestHandler _handler;
+    private readonly ServerOptions  _options;
 
     /// <summary>
     /// Raised once the listening socket has been bound and started accepting connections.
@@ -39,20 +40,21 @@ public sealed class Server
     /// <summary>
     /// Represents an HTTP server that listens for incoming requests and handles them with a specified request handler.
     /// </summary>
-    public Server(RequestHandler handler, int port, string host = "127.0.0.1")
+    public Server(RequestHandler handler, int port, string host = "127.0.0.1", ServerOptions? options = null)
     {
         if (port is < 1 or > 65535)
         {
             throw new AnkaPortOutOfRageException(nameof(port), "Port must be between 1 and 65535.");
         }
-        
+
         if (!IPAddress.TryParse(host, out var ip))
         {
             throw new AnkaArgumentException("Invalid IP address.", nameof(host));
         }
-        
+
         _handler  = handler;
         _endPoint = new IPEndPoint(ip, port);
+        _options  = options ?? new ServerOptions();
     }
 
     /// <summary>
@@ -69,21 +71,24 @@ public sealed class Server
         // Pre-warm the thread pool so that burst workloads at high connection counts
         // (e.g. c=400) do not spend the first few seconds waiting for the pool to
         // slowly inject new threads (default hill-climb injects ~1 thread per 500 ms).
-        var minThreads = Math.Max(Environment.ProcessorCount * 4, 64);
-        ThreadPool.SetMinThreads(minThreads, minThreads);
+        // Only raise the minimum — never lower an already-higher host-level setting.
+        ThreadPool.GetMinThreads(out var currentMin, out var currentMinIO);
+        var desiredMin = _options.MinThreadPoolThreads ?? Environment.ProcessorCount * 2 + 2;
+        if (desiredMin > currentMin)
+            ThreadPool.SetMinThreads(desiredMin, Math.Max(desiredMin, currentMinIO));
 
         using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 
         socket.NoDelay = true;
         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         socket.Bind(_endPoint);
-        socket.Listen(backlog: 512);
+        socket.Listen(_options.Backlog);
 
         Console.WriteLine($"Listening on {_endPoint}");
         ListeningStarted?.Invoke(_endPoint);
 
         // Run multiple accept loops in parallel to avoid serialization under burst traffic.
-        var acceptorCount = Math.Max(Environment.ProcessorCount / 2, 2);
+        var acceptorCount = _options.AcceptorCount ?? Math.Max(Environment.ProcessorCount / 2, 2);
         var acceptors     = new Task[acceptorCount];
 
         for (var i = 0; i < acceptorCount; i++)

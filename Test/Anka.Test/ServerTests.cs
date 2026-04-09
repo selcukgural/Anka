@@ -106,6 +106,30 @@ public class ServerTests
         Assert.Equal(port, endPoint.Port);
     }
 
+    [Fact]
+    public void Constructor_WithCustomOptions_DoesNotThrow()
+    {
+        var options = new ServerOptions { MinThreadPoolThreads = 8, AcceptorCount = 2, Backlog = 256 };
+        var ex = Record.Exception(() => new Server(NoopHandler, 8080, "127.0.0.1", options));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void Constructor_WithNullOptions_UsesDefaults()
+    {
+        var ex = Record.Exception(() => new Server(NoopHandler, 8080, "127.0.0.1", null));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void ServerOptions_Defaults_AreReasonable()
+    {
+        var options = new ServerOptions();
+        Assert.Null(options.MinThreadPoolThreads);
+        Assert.Null(options.AcceptorCount);
+        Assert.Equal(512, options.Backlog);
+    }
+
     private static int GetFreePort()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);

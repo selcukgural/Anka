@@ -1,0 +1,44 @@
+# compose.yaml — Anka Linux benchmark
+#
+# Starts a PostgreSQL instance, initialises the schema, then runs the full
+# load-test suite (framework + TechEmpower-style DB tests).
+#
+# Compatible with both Docker Compose v2 and Podman Compose.
+#
+# Usage (from the repo root):
+#   docker compose -f compose.benchmark.yaml up --build --abort-on-container-exit
+#   podman-compose -f compose.benchmark.yaml up --build
+#
+# Or use the helper script which handles everything automatically:
+#   ./scripts/run-linux-benchmark.sh linux/arm64
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     benchmarkdbuser
+      POSTGRES_PASSWORD: benchmarkdbpass
+      POSTGRES_DB:       benchmark
+    volumes:
+      # Initialise schema on first start
+      - ./Test/LoadTest/Anka.Wrk.LoadTest/scripts/setup_db.sql:/docker-entrypoint-initdb.d/01-setup.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchmarkdbuser -d benchmark"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  # ── Benchmark runner ────────────────────────────────────────────────────────
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile.benchmark
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "Host=db;Database=benchmark;Username=benchmarkdbuser;Password=benchmarkdbpass"
+    volumes:
+      - ./docs:/workspace/docs

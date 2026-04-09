@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# Anka — Linux load-test runner
+#
+# Builds the full solution inside a Linux container, installs wrk,
+# runs the Anka.Wrk.LoadTest suite, and writes results to
+#   /workspace/docs/throughput-results.md
+#
+# Usage (from the repo root):
+#   docker build -f Dockerfile.benchmark -t anka-benchmark .
+#   docker run --rm -v "$(pwd)/docs:/workspace/docs" anka-benchmark
+#
+# The wrk results file will be updated in your local docs/ directory.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM mcr.microsoft.com/dotnet/sdk:8.0
+
+# ── System dependencies ───────────────────────────────────────────────────────
+# wrk: HTTP benchmarking tool (load test runner)
+# build-essential + libssl-dev: required by wrk source build and Native AOT (clang)
+# clang + zlib1g-dev + libkrb5-dev: Native AOT prerequisites on Linux
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        unzip \
+        build-essential \
+        libssl-dev \
+        clang \
+        zlib1g-dev \
+        libkrb5-dev \
+    && git clone --depth 1 https://github.com/wg/wrk.git /tmp/wrk \
+    && make -C /tmp/wrk \
+    && mv /tmp/wrk/wrk /usr/local/bin/wrk \
+    && rm -rf /tmp/wrk \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Source ────────────────────────────────────────────────────────────────────
+WORKDIR /workspace
+COPY . .
+
+# ── Run load test ─────────────────────────────────────────────────────────────
+# Results written to /workspace/docs/throughput-results.md
+# Mount your local docs/ directory to extract results:
+#   docker run --rm -v "$(pwd)/docs:/workspace/docs" anka-benchmark
+CMD ["dotnet", "run", "--project", "Test/LoadTest/Anka.Wrk.LoadTest", "-c", "Release"]

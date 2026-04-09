@@ -4,9 +4,23 @@
 [![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 8+](https://img.shields.io/badge/.NET-8.0%2B-512BD4)](https://dotnet.microsoft.com)
-&nbsp; [Türkçe →](README.tr.md)
 
 Minimal HTTP/1.x server library for .NET 8+, built for **Native AOT** with a focus on minimising cold-start time and keeping steady-state allocation at zero.
+
+---
+
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Why Anka](#why-anka)
+3. [Quick Start](#quick-start)
+4. [Examples](#examples)
+5. [Architecture Overview](#architecture-overview)
+6. [Class Reference — Public API](#class-reference--public-api)
+7. [Class Reference — Internal](#class-reference--internal)
+8. [Memory Model](#memory-model)
+9. [Performance Profile](#performance-profile)
+10. [Project Structure](#project-structure)
 
 ---
 
@@ -170,16 +184,6 @@ var server = new Server(
 ```
 
 ---
-
-## Table of Contents
-
-1. [Features and Limitations](#features-and-limitations)
-2. [Architecture Overview](#architecture-overview)
-3. [Class Reference — Public API](#class-reference--public-api)
-4. [Class Reference — Internal](#class-reference--internal)
-5. [Memory Model](#memory-model)
-6. [Performance Profile](#performance-profile)
-7. [Project Structure](#project-structure)
 
 ---
 
@@ -507,7 +511,21 @@ Connection closes:
 > **Environment:** Apple M3 Max · 16 logical cores · macOS 26.3.1 · .NET 8.0.25 · Native AOT (osx-arm64)  
 > Microbenchmarks: `dotnet run --project Benchmark/Anka.Benchmark -c Release`  
 > End-to-end: `Test/LoadTest/Anka.Wrk.LoadTest` (wrk, 10 s per level, loopback)  
-> Full results: [`docs/throughput-results.md`](docs/throughput-results.md)
+> Full results: [`docs/`](docs/) — one file per OS per run (e.g. `throughput-results-macos-2026-04-08.md`)
+
+### Running Benchmarks on Linux
+
+Docker or Podman is required. PostgreSQL is started automatically — no manual setup needed.
+
+```shell
+# linux/amd64 (default)
+./scripts/run-linux-benchmark.sh
+
+# linux/arm64 — runs natively on Apple Silicon (much faster, no emulation)
+./scripts/run-linux-benchmark.sh linux/arm64
+```
+
+The script spins up PostgreSQL, initialises the schema, runs the full suite (framework + DB tests), then tears everything down. Results are written to `docs/throughput-results-linux-{date}.md`.
 
 ---
 
@@ -603,7 +621,7 @@ Connection closes:
 | DB Updates (20) | 622 | 629 |
 | Cached Queries (100) | 107,200 | 145,600 |
 
-> DB-bound tests are limited by PostgreSQL connection pool saturation, not by the HTTP layer. Per-concurrency-level detail tables are in [`docs/throughput-results.md`](docs/throughput-results.md).
+> DB-bound tests are limited by PostgreSQL connection pool saturation, not by the HTTP layer. Per-concurrency-level detail tables are in [`docs/`](docs/).
 
 ---
 
@@ -651,11 +669,14 @@ Anka/
 │   ├── Anka.HttpConsole/          ← Native AOT load-test target
 │   ├── Kestrel.HttpConsole/       ← Minimal ASP.NET Core comparison target
 │   └── Anka.Wrk.LoadTest/         ← wrk-based startup + throughput harness
-└── Anka.Benchmark/                ← BenchmarkDotNet micro-benchmarks
-    ├── HttpHeadersBenchmarks.cs
-    ├── HttpMethodParserBenchmarks.cs
-    ├── HttpParserBenchmarks.cs
-    └── HttpVersionParserBenchmarks.cs
+├── Benchmark/Anka.Benchmark/      ← BenchmarkDotNet micro-benchmarks
+│   ├── HttpHeadersBenchmarks.cs
+│   ├── HttpMethodParserBenchmarks.cs
+│   ├── HttpParserBenchmarks.cs
+│   └── HttpVersionParserBenchmarks.cs
+├── scripts/
+│   └── run-linux-benchmark.sh     ← Docker helper: run load test on Linux
+└── Dockerfile.benchmark           ← Linux load-test image (wrk + .NET SDK + AOT tools)
 ```
 
 ---
