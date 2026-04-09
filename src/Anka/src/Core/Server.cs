@@ -115,7 +115,7 @@ public sealed class Server
                 var client = await listener.AcceptAsync(cancellationToken);
 
                 // Fire & forget — accept loop never blocks on a connection
-                _ = Connection.RunAsync(client, _handler, cancellationToken);
+                _ = Connection.RunAsync(client, _handler, _options.DefaultResponseHeaders, cancellationToken);
             }
         }
         catch (OperationCanceledException)

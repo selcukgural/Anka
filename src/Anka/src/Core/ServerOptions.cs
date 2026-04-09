@@ -34,4 +34,23 @@ public sealed class ServerOptions
     /// Defaults to <c>512</c>.
     /// </summary>
     public int Backlog { get; init; } = 512;
+
+    /// <summary>
+    /// Extra response headers sent on every HTTP response (e.g., security headers,
+    /// CORS headers, server branding). Applied before any per-request extra headers.
+    /// </summary>
+    /// <remarks>
+    /// Build the list once at startup for zero per-request allocation:
+    /// <code>
+    /// var options = new ServerOptions
+    /// {
+    ///     DefaultResponseHeaders =
+    ///     [
+    ///         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
+    ///         new HttpHeader("x-frame-options"u8.ToArray(),        "DENY"u8.ToArray()),
+    ///     ]
+    /// };
+    /// </code>
+    /// </remarks>
+    public IReadOnlyList<HttpHeader> DefaultResponseHeaders { get; init; } = [];
 }

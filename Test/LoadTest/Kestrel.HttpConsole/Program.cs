@@ -273,10 +273,26 @@ async Task PopulateWorldCacheAsync()
         await using var cacheConn = await dataSource.OpenConnectionAsync();
         await using var cacheCmd = cacheConn.CreateCommand();
         cacheCmd.CommandText = "SELECT id, randomnumber FROM cachedworld";
-        await using var cacheReader = await cacheCmd.ExecuteReaderAsync();
-        while (await cacheReader.ReadAsync())
+        try
         {
-            worldCache[cacheReader.GetInt32(0)] = cacheReader.GetInt32(1);
+            await using var cacheReader = await cacheCmd.ExecuteReaderAsync();
+            while (await cacheReader.ReadAsync())
+                worldCache[cacheReader.GetInt32(0)] = cacheReader.GetInt32(1);
+        }
+        catch (PostgresException pgEx) when (pgEx.SqlState == "42P01")
+        {
+            Console.WriteLine("[info] cachedworld table missing — creating from world table...");
+            await using var createCmd = cacheConn.CreateCommand();
+            createCmd.CommandText = "CREATE TABLE cachedworld AS SELECT id, randomnumber FROM world";
+            await createCmd.ExecuteNonQueryAsync();
+
+            await using var refillCmd = cacheConn.CreateCommand();
+            refillCmd.CommandText = "SELECT id, randomnumber FROM cachedworld";
+            await using var refillReader = await refillCmd.ExecuteReaderAsync();
+            while (await refillReader.ReadAsync())
+                worldCache[refillReader.GetInt32(0)] = refillReader.GetInt32(1);
+
+            Console.WriteLine($"[info] cachedworld created and warmed up ({worldCache.Count} rows).");
         }
     }
     catch (Exception ex)

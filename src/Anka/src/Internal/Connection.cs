@@ -21,12 +21,14 @@ internal sealed class Connection
 
     private readonly Socket _socket;
     private readonly RequestHandler _handler;
+    private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
     private readonly CancellationToken _cancellationToken;
 
-    private Connection(Socket socket, RequestHandler handler, CancellationToken cancellationToken)
+    private Connection(Socket socket, RequestHandler handler, IReadOnlyList<HttpHeader> defaultHeaders, CancellationToken cancellationToken)
     {
-        _socket = socket;
-        _handler = handler;
+        _socket         = socket;
+        _handler        = handler;
+        _defaultHeaders = defaultHeaders;
         _cancellationToken = cancellationToken;
     }
 
@@ -34,17 +36,17 @@ internal sealed class Connection
     /// Creates a <see cref="Connection"/> for <paramref name="socket"/> and starts processing it.
     /// Returns a <see cref="Task"/> that completes when the connection closes.
     /// </summary>
-    public static Task RunAsync(Socket socket, RequestHandler handler, CancellationToken cancellationToken)
+    public static Task RunAsync(Socket socket, RequestHandler handler, IReadOnlyList<HttpHeader> defaultHeaders, CancellationToken cancellationToken)
     {
         socket.NoDelay = true;
-        return new Connection(socket, handler, cancellationToken).ProcessAsync();
+        return new Connection(socket, handler, defaultHeaders, cancellationToken).ProcessAsync();
     }
 
     private async Task ProcessAsync()
     {
         var buf = ArrayPool<byte>.Shared.Rent(BufferSize);
         var request = HttpRequestPool.Rent();
-        using var writer = new HttpResponseWriter(_socket);
+        using var writer = new HttpResponseWriter(_socket, _defaultHeaders);
         using var receiver = new SocketReceiver();
 
         // Closing the socket aborts any pending SocketAsyncEventArgs operation,
