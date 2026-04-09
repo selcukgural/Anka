@@ -78,7 +78,7 @@ async Task<ServerBenchmarkResult> RunTargetBenchmarks(LaunchTarget target, int s
     var baseUrl = $"http://127.0.0.1:{serverPort}";
 
     var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
-                ?? "Host=localhost;Database=benchmark;Username=benchmarkdbuser;Password=benchmarkdbpass";
+                ?? "Host=localhost;Database=hello_world;Username=benchmarkdbuser;Password=benchmarkdbpass";
 
     var outputBuffer = new StringBuilder();
     var listenTcs = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);

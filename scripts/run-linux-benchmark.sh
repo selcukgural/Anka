@@ -65,12 +65,12 @@ echo ">>> Starting PostgreSQL..."
     --platform "$PLATFORM" \
     -e POSTGRES_USER=benchmarkdbuser \
     -e POSTGRES_PASSWORD=benchmarkdbpass \
-    -e POSTGRES_DB=benchmark \
+    -e POSTGRES_DB=hello_world \
     postgres:16-alpine
 
 echo -n ">>> Waiting for PostgreSQL to be ready"
 for i in $(seq 1 30); do
-    if "$CTR" exec "$DB_CONTAINER" pg_isready -U benchmarkdbuser -d benchmark &>/dev/null; then
+    if "$CTR" exec "$DB_CONTAINER" pg_isready -U benchmarkdbuser -d hello_world &>/dev/null; then
         echo " OK"
         break
     fi
@@ -85,7 +85,7 @@ done
 # ── Schema ────────────────────────────────────────────────────────────────────
 echo ">>> Initialising database schema..."
 "$CTR" exec -i "$DB_CONTAINER" \
-    psql -U benchmarkdbuser -d benchmark < "$SQL_FILE"
+    psql -U benchmarkdbuser -d hello_world < "$SQL_FILE"
 
 # ── Build benchmark image ─────────────────────────────────────────────────────
 echo ""
@@ -103,7 +103,7 @@ echo ">>> Running load test (results → docs/throughput-results-linux-$(date +%
     --rm \
     --platform "$PLATFORM" \
     --network "$NETWORK" \
-    -e DATABASE_URL="Host=${DB_CONTAINER};Database=benchmark;Username=benchmarkdbuser;Password=benchmarkdbpass" \
+    -e DATABASE_URL="Host=${DB_CONTAINER};Database=hello_world;Username=benchmarkdbuser;Password=benchmarkdbpass" \
     -v "$REPO_ROOT/docs:/workspace/docs" \
     "$IMAGE"
 

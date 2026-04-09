@@ -48,3 +48,18 @@ INSERT INTO fortune (id, message) VALUES
     (10, 'Computers make very fast, very accurate mistakes.'),
     (11, '<script>alert("This should not be displayed in a browser alert box.");</script>'),
     (12, 'フレームワークのベンチマーク');
+
+-- ── cachedworld table ─────────────────────────────────────────────────────────
+-- TFB Cached Queries test uses a distinct table separate from world.
+-- Schema is identical to world; populated with the same 10,000 rows.
+
+DROP TABLE IF EXISTS cachedworld;
+
+CREATE TABLE cachedworld (
+    id           INTEGER NOT NULL,
+    randomnumber INTEGER NOT NULL,
+    PRIMARY KEY (id)
+);
+
+INSERT INTO cachedworld (id, randomnumber)
+SELECT id, randomnumber FROM world;

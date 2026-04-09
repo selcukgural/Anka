@@ -20,12 +20,12 @@ services:
     environment:
       POSTGRES_USER:     benchmarkdbuser
       POSTGRES_PASSWORD: benchmarkdbpass
-      POSTGRES_DB:       benchmark
+      POSTGRES_DB:       hello_world
     volumes:
       # Initialise schema on first start
       - ./Test/LoadTest/Anka.Wrk.LoadTest/scripts/setup_db.sql:/docker-entrypoint-initdb.d/01-setup.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U benchmarkdbuser -d benchmark"]
+      test: ["CMD-SHELL", "pg_isready -U benchmarkdbuser -d hello_world"]
       interval: 2s
       timeout: 5s
       retries: 15
@@ -39,6 +39,6 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: "Host=db;Database=benchmark;Username=benchmarkdbuser;Password=benchmarkdbpass"
+      DATABASE_URL: "Host=db;Database=hello_world;Username=benchmarkdbuser;Password=benchmarkdbpass"
     volumes:
       - ./docs:/workspace/docs
