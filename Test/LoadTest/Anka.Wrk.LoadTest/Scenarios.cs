@@ -63,7 +63,4 @@ internal static class Scenarios
             "`GET /cached-queries?count=100` — returns 100 World objects served from an in-memory cache populated at startup. Mirrors TechEmpower's *Cached Queries* test.",
             "/cached-queries?count=100"),
     ];
-
-    /// <summary>All scenarios combined (for backwards-compat use if needed).</summary>
-    public static IReadOnlyList<Scenario> All => [.. Framework, .. Database];
 }

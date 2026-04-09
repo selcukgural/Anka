@@ -4,16 +4,16 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Anka.LoadTest;
 
-const int    port             = 18080;
-const int    durationSeconds  = 10;
-const int    warmupSeconds    = 2;
-const int    wrkThreads       = 16;
-var          concurrencyLevels = new[] { 1, 10, 50, 100, 400 };
-var          dbConcurrencyLevels = new[] { 8, 16, 32, 64, 128, 256 };
+const int port = 18080;
+const int durationSeconds = 10;
+const int warmupSeconds = 2;
+const int wrkThreads = 16;
+var concurrencyLevels = new[] { 1, 10, 50, 100, 400 };
+var dbConcurrencyLevels = new[] { 8, 16, 32, 64, 128, 256 };
 
 var solutionRoot = FindSolutionRoot();
-var luaScript    = Path.Combine(AppContext.BaseDirectory, "scripts", "post_echo.lua");
-var rid          = GetRid();
+var luaScript = Path.Combine(AppContext.BaseDirectory, "scripts", "post_echo.lua");
+var rid = GetRid();
 
 Console.ForegroundColor = ConsoleColor.Cyan;
 Console.WriteLine("=== Anka Load Test (TFB-Style) ===");
@@ -31,54 +31,61 @@ foreach (var target in targets)
     benchmarkRuns.Add(await RunTargetBenchmarks(target, port));
 }
 
-// ── Report ───────────────────────────────────────────────────────────────────
-
 ReportWriter.Write(solutionRoot, benchmarkRuns, durationSeconds);
+
 return 0;
 
-
-// ── Local functions ───────────────────────────────────────────────────────────
+#region local functions
 
 async Task<IReadOnlyList<LaunchTarget>> PublishTargetsAsync()
 {
-    var targets = new List<LaunchTarget>();
+
 
     var ankaCsproj = Path.Combine(solutionRoot, "Test", "LoadTest", "Anka.HttpConsole", "Anka.HttpConsole.csproj");
-    var ankaExe    = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Anka.HttpConsole.exe" : "Anka.HttpConsole";
-    var ankaPath   = Path.Combine(solutionRoot, "Test", "LoadTest", "Anka.HttpConsole", "bin", "Release", "net8.0", rid, "publish", ankaExe);
+    var ankaExe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "Anka.HttpConsole.exe" : "Anka.HttpConsole";
+    var ankaPath = Path.Combine(solutionRoot, "Test", "LoadTest", "Anka.HttpConsole", "bin", "Release", "net8.0", rid, "publish", ankaExe);
 
     Console.Write($"Publishing Anka.HttpConsole (AOT, {rid})... ");
     var ankaPublish = await RunProcessAsync("dotnet", $"publish \"{ankaCsproj}\" -c Release -r {rid} /nologo");
+
     if (ankaPublish.ExitCode != 0)
     {
         PrintError("FAILED\n" + ankaPublish.Output);
         throw new InvalidOperationException("Anka.HttpConsole publish failed.");
     }
+
     Console.WriteLine("OK");
-    targets.Add(new LaunchTarget("Anka", $"Native AOT ({rid})", ankaPath, port.ToString(CultureInfo.InvariantCulture)));
+    
+    var launchTargets = new List<LaunchTarget>
+    {
+        new("Anka", $"Native AOT ({rid})", ankaPath, port.ToString(CultureInfo.InvariantCulture))
+    };
 
     var kestrelCsproj = Path.Combine(solutionRoot, "Test", "LoadTest", "Kestrel.HttpConsole", "Kestrel.HttpConsole.csproj");
-    var kestrelDll    = Path.Combine(solutionRoot, "Test", "LoadTest", "Kestrel.HttpConsole", "bin", "Release", "net8.0", "publish", "Kestrel.HttpConsole.dll");
+
+    var kestrelDll = Path.Combine(solutionRoot, "Test", "LoadTest", "Kestrel.HttpConsole", "bin", "Release", "net8.0", "publish", "Kestrel.HttpConsole.dll");
 
     Console.Write("Publishing Kestrel.HttpConsole (Release)... ");
     var kestrelPublish = await RunProcessAsync("dotnet", $"publish \"{kestrelCsproj}\" -c Release /nologo");
+
     if (kestrelPublish.ExitCode != 0)
     {
         PrintError("FAILED\n" + kestrelPublish.Output);
         throw new InvalidOperationException("Kestrel.HttpConsole publish failed.");
     }
-    Console.WriteLine("OK");
-    targets.Add(new LaunchTarget("Kestrel", "ASP.NET Core / JIT", "dotnet", $"\"{kestrelDll}\" {port.ToString(CultureInfo.InvariantCulture)}"));
 
-    return targets;
+    Console.WriteLine("OK");
+    launchTargets.Add(new LaunchTarget("Kestrel", "ASP.NET Core / JIT", "dotnet", $"\"{kestrelDll}\" {port.ToString(CultureInfo.InvariantCulture)}"));
+
+    return launchTargets;
 }
 
 async Task<ServerBenchmarkResult> RunTargetBenchmarks(LaunchTarget target, int serverPort)
 {
     var baseUrl = $"http://127.0.0.1:{serverPort}";
 
-    var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
-                ?? "Host=localhost;Database=hello_world;Username=benchmarkdbuser;Password=benchmarkdbpass";
+    var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL") ??
+                "Host=localhost;Database=hello_world;Username=benchmarkdbuser;Password=benchmarkdbpass";
 
     var outputBuffer = new StringBuilder();
     var listenTcs = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -89,21 +96,22 @@ async Task<ServerBenchmarkResult> RunTargetBenchmarks(LaunchTarget target, int s
     {
         StartInfo = new ProcessStartInfo
         {
-            FileName               = target.Command,
-            Arguments              = target.Arguments,
+            FileName = target.Command,
+            Arguments = target.Arguments,
             RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
+            RedirectStandardError = true,
+            UseShellExecute = false,
         },
     };
     serverProc.StartInfo.Environment["DATABASE_URL"] = dbUrl;
     serverProc.OutputDataReceived += (_, e) => HandleServerOutputLine(e.Data, outputBuffer, listenTcs, startupMetricsTcs, startupStopwatch);
-    serverProc.ErrorDataReceived  += (_, e) => HandleServerOutputLine(e.Data, outputBuffer, listenTcs, startupMetricsTcs, startupStopwatch);
+    serverProc.ErrorDataReceived += (_, e) => HandleServerOutputLine(e.Data, outputBuffer, listenTcs, startupMetricsTcs, startupStopwatch);
     serverProc.Start();
     serverProc.BeginOutputReadLine();
     serverProc.BeginErrorReadLine();
 
     Console.Write($"Waiting for {target.Name} on port {serverPort}... ");
+
     while (!listenTcs.Task.IsCompleted)
     {
         if (serverProc.HasExited)
@@ -114,7 +122,15 @@ async Task<ServerBenchmarkResult> RunTargetBenchmarks(LaunchTarget target, int s
 
         if (startupStopwatch.Elapsed > TimeSpan.FromSeconds(30))
         {
-            try { serverProc.Kill(entireProcessTree: true); } catch { /* ignore */ }
+            try
+            {
+                serverProc.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                /* ignore */
+            }
+
             PrintError($"TIMEOUT\n{outputBuffer}");
             throw new InvalidOperationException($"{target.Name} did not start listening within the timeout.");
         }
@@ -127,12 +143,10 @@ async Task<ServerBenchmarkResult> RunTargetBenchmarks(LaunchTarget target, int s
     serverProc.Refresh();
 
     var startupMetrics = await TryGetStartupMetricsAsync(startupMetricsTcs.Task);
-    var startup = new StartupMetrics(
-        TimeToListenMs:    timeToListenMs,
-        TimeToReadyMs:     startupMetrics?.ReadyMs ?? timeToListenMs,
-        FirstResponseMs:   firstResponseMs,
-        StartupAllocatedBytes: startupMetrics?.AllocatedBytes ?? 0,
-        WorkingSetMb:      serverProc.WorkingSet64 / (1024.0 * 1024.0));
+
+    var startup = new StartupMetrics(TimeToListenMs: timeToListenMs, TimeToReadyMs: startupMetrics?.ReadyMs ?? timeToListenMs,
+                                     FirstResponseMs: firstResponseMs, StartupAllocatedBytes: startupMetrics?.AllocatedBytes ?? 0,
+                                     WorkingSetMb: serverProc.WorkingSet64 / (1024.0 * 1024.0));
 
     Console.WriteLine("OK");
     PrintStartupMetrics(startup);
@@ -143,16 +157,21 @@ async Task<ServerBenchmarkResult> RunTargetBenchmarks(LaunchTarget target, int s
     Console.WriteLine();
 
     var frameworkData = await RunScenarioSet(baseUrl, Scenarios.Framework, concurrencyLevels);
-    var dbData        = await RunScenarioSet(baseUrl, Scenarios.Database, dbConcurrencyLevels);
+    var dbData = await RunScenarioSet(baseUrl, Scenarios.Database, dbConcurrencyLevels);
 
-    try { serverProc.Kill(entireProcessTree: true); } catch { /* already stopped */ }
+    try
+    {
+        serverProc.Kill(entireProcessTree: true);
+    }
+    catch
+    {
+        /* already stopped */
+    }
+
     return new ServerBenchmarkResult(target, startup, frameworkData, dbData);
 }
 
-async Task<IReadOnlyList<(Scenario, IReadOnlyList<WrkResult>)>> RunScenarioSet(
-    string baseUrl,
-    IReadOnlyList<Scenario> scenarios,
-    int[] concLevels)
+async Task<IReadOnlyList<(Scenario, IReadOnlyList<WrkResult>)>> RunScenarioSet(string baseUrl, IReadOnlyList<Scenario> scenarios, int[] conLevels)
 {
     var data = new List<(Scenario, IReadOnlyList<WrkResult>)>();
 
@@ -164,19 +183,16 @@ async Task<IReadOnlyList<(Scenario, IReadOnlyList<WrkResult>)>> RunScenarioSet(
 
         var results = new List<WrkResult>();
 
-        foreach (var c in concLevels)
+        foreach (var con in conLevels)
         {
-            Console.Write($"  c={c,4}  ");
+            Console.Write($"  c={con,4}  ");
 
             var lua = scenario.Path == "/echo" ? luaScript : scenario.LuaScript;
-            var r   = await WrkRunner.RunAsync(
-                $"{baseUrl}{scenario.Path}",
-                connections:     c,
-                durationSeconds: durationSeconds,
-                threads:         wrkThreads,
-                luaScript:       lua);
+
+            var r = await WrkRunner.RunAsync($"{baseUrl}{scenario.Path}", connections: con, durationSeconds: durationSeconds, threads: wrkThreads, luaScript: lua);
 
             results.Add(r);
+            
             PrintRow(r);
         }
 
@@ -196,12 +212,11 @@ static void PrintError(string msg)
 
 static void PrintRow(WrkResult r)
 {
-    var rpsStr = r.RequestsPerSec >= 1_000_000 ? $"{r.RequestsPerSec / 1_000_000:F2}M req/s"
-               : r.RequestsPerSec >= 1_000     ? $"{r.RequestsPerSec / 1_000:F1}k req/s"
-               :                                 $"{r.RequestsPerSec:F0} req/s";
+    var rpsStr = r.RequestsPerSec >= 1_000_000 ? $"{r.RequestsPerSec / 1_000_000:F2}M req/s" :
+                 r.RequestsPerSec >= 1_000     ? $"{r.RequestsPerSec / 1_000:F1}k req/s" : $"{r.RequestsPerSec:F0} req/s";
 
     var errColor = r.ErrorPct > 0 ? ConsoleColor.Red : ConsoleColor.DarkCyan;
-    
+
     Console.ForegroundColor = ConsoleColor.DarkCyan;
     Console.Write($"{rpsStr,20}  avg {r.LatencyAvgMs:F2} ms  p99 {r.P99Ms:F2} ms  p99.9 {r.P999Ms:F2} ms  ");
     Console.ForegroundColor = errColor;
@@ -213,17 +228,14 @@ static void PrintRow(WrkResult r)
 static void PrintStartupMetrics(StartupMetrics startup)
 {
     Console.ForegroundColor = ConsoleColor.DarkCyan;
+
     Console.WriteLine(
         $"  startup listen {startup.TimeToListenMs:F2} ms  ready {startup.TimeToReadyMs:F2} ms  first {startup.FirstResponseMs:F2} ms  alloc {FormatBytes(startup.StartupAllocatedBytes)}  rss {startup.WorkingSetMb:F2} MB");
     Console.ResetColor();
 }
 
-static void HandleServerOutputLine(
-    string? line,
-    StringBuilder outputBuffer,
-    TaskCompletionSource<double> listenTcs,
-    TaskCompletionSource<(double ReadyMs, long AllocatedBytes)> startupMetricsTcs,
-    Stopwatch startupStopwatch)
+static void HandleServerOutputLine(string? line, StringBuilder outputBuffer, TaskCompletionSource<double> listenTcs,
+                                   TaskCompletionSource<(double ReadyMs, long AllocatedBytes)> startupMetricsTcs, Stopwatch startupStopwatch)
 {
     if (string.IsNullOrWhiteSpace(line))
     {
@@ -263,6 +275,7 @@ static bool TryParseStartupMetrics(string line, out double readyMs, out long all
     }
 
     var parts = line["[startup-metrics] ".Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     if (parts.Length < 2)
     {
         return false;
@@ -271,6 +284,7 @@ static bool TryParseStartupMetrics(string line, out double readyMs, out long all
     foreach (var part in parts)
     {
         var separatorIndex = part.IndexOf('=');
+
         if (separatorIndex <= 0)
         {
             continue;
@@ -279,13 +293,14 @@ static bool TryParseStartupMetrics(string line, out double readyMs, out long all
         var key = part[..separatorIndex];
         var value = part[(separatorIndex + 1)..];
 
-        if (key == "ready_ms")
+        switch (key)
         {
-            _ = double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out readyMs);
-        }
-        else if (key == "allocated_bytes")
-        {
-            _ = long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out allocatedBytes);
+            case "ready_ms":
+                double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out readyMs);
+                break;
+            case "allocated_bytes":
+                long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out allocatedBytes);
+                break;
         }
     }
 
@@ -304,6 +319,7 @@ static async Task<double> MeasureFirstResponseAsync(string baseUrl, Process serv
         {
             using var resp = await http.GetAsync($"{baseUrl}/health");
             sw.Stop();
+
             if (resp.IsSuccessStatusCode)
             {
                 return sw.Elapsed.TotalMilliseconds;
@@ -337,10 +353,10 @@ static string FormatBytes(long bytes)
 {
     return bytes switch
     {
-        <= 0                => "—",
-        < 1024              => $"{bytes} B",
-        < 1024 * 1024       => $"{bytes / 1024.0:F1} KB",
-        _                   => $"{bytes / (1024.0 * 1024.0):F2} MB"
+        <= 0          => "—",
+        < 1024        => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+        _             => $"{bytes / (1024.0 * 1024.0):F2} MB"
     };
 }
 
@@ -350,17 +366,16 @@ static async Task<(int ExitCode, string Output)> RunProcessAsync(string fileName
 
     p.StartInfo = new ProcessStartInfo
     {
-        FileName               = fileName,
-        Arguments              = args,
+        FileName = fileName,
+        Arguments = args,
         RedirectStandardOutput = true,
-        RedirectStandardError  = true,
-        UseShellExecute        = false,
+        RedirectStandardError = true,
+        UseShellExecute = false,
     };
 
     p.Start();
 
-    var output = await p.StandardOutput.ReadToEndAsync()
-                 + await p.StandardError.ReadToEndAsync();
+    var output = await p.StandardOutput.ReadToEndAsync() + await p.StandardError.ReadToEndAsync();
 
     await p.WaitForExitAsync();
 
@@ -370,20 +385,24 @@ static async Task<(int ExitCode, string Output)> RunProcessAsync(string fileName
 static string FindSolutionRoot()
 {
     var dir = new DirectoryInfo(AppContext.BaseDirectory);
+
     while (dir is not null)
     {
         if (dir.GetFiles("*.slnx").Length > 0 || dir.GetFiles("*.sln").Length > 0)
+        {
             return dir.FullName;
+        }
+
         dir = dir.Parent;
     }
+
     return Directory.GetCurrentDirectory();
 }
 
 static string GetRid()
 {
-    var os   = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win"
-             : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)     ? "osx"
-             :                                                         "linux";
+    var os = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win" : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" : "linux";
+
     var arch = RuntimeInformation.OSArchitecture switch
     {
         Architecture.Arm64 => "arm64",
@@ -393,3 +412,5 @@ static string GetRid()
     };
     return $"{os}-{arch}";
 }
+
+#endregion

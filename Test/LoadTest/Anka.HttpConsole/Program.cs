@@ -26,10 +26,10 @@ var helloWorld    = "Hello, World!"u8.ToArray();
 var largeBody     = Encoding.ASCII.GetBytes(string.Concat(Enumerable.Repeat("Anka is a minimal, zero-allocation HTTP/1.x server for .NET. ", 36))); // ~2 KB
 var okBody        = "OK"u8.ToArray();
 
- ReadOnlyMemory<byte> textPlainCt = "text/plain; charset=utf-8"u8.ToArray();
+ ReadOnlyMemory<byte> textPlainUtf8 = "text/plain; charset=utf-8"u8.ToArray();
  ReadOnlyMemory<byte> appJsonCt     = "application/json; charset=utf-8"u8.ToArray();
  ReadOnlyMemory<byte> textHtmlCt    = "text/html; charset=utf-8"u8.ToArray();
-ReadOnlyMemory<byte> textPlainNoCt = "text/plain"u8.ToArray();
+ReadOnlyMemory<byte> textPlain     = "text/plain"u8.ToArray();
 
  // ── PostgreSQL data source ────────────────────────────────────────────────────
 
@@ -56,13 +56,13 @@ var server = new Server(handler: async (req, res, ct) =>
 
     if (req.PathEquals("/plain"u8) || req.PathEquals("/"u8))
     {
-        await res.WriteAsync(200, plainBody, textPlainCt, keepAlive: keepAlive, cancellationToken: ct);
+        await res.WriteAsync(200, plainBody, textPlainUtf8, keepAlive: keepAlive, cancellationToken: ct);
     }
     
     // ── TFB: Plaintext ────────────────────────────────────────────────
     else if (req.PathEquals("/plaintext"u8))
     {
-        await res.WriteAsync(200, helloWorld, textPlainNoCt, keepAlive: keepAlive, cancellationToken: ct);
+        await res.WriteAsync(200, helloWorld, textPlain, keepAlive: keepAlive, cancellationToken: ct);
     }
     
     else if (req.PathEquals("/json"u8))
@@ -81,17 +81,17 @@ var server = new Server(handler: async (req, res, ct) =>
     
     else if (req.PathEquals("/health"u8))
     {
-        await res.WriteAsync(200, okBody, textPlainCt, keepAlive: keepAlive, cancellationToken: ct);
+        await res.WriteAsync(200, okBody, textPlainUtf8, keepAlive: keepAlive, cancellationToken: ct);
     }
     
     else if (req.PathEquals("/large"u8))
     {
-        await res.WriteAsync(200, largeBody, textPlainCt, keepAlive: keepAlive, cancellationToken: ct);
+        await res.WriteAsync(200, largeBody, textPlainUtf8, keepAlive: keepAlive, cancellationToken: ct);
     }
     
     else if (req.PathEquals("/headers"u8))
     {
-        await res.WriteAsync(200, plainBody, textPlainCt, keepAlive: keepAlive, cancellationToken: ct);
+        await res.WriteAsync(200, plainBody, textPlainUtf8, keepAlive: keepAlive, cancellationToken: ct);
     }
     // ── TFB: Single DB Query ──────────────────────────────────────────
     else if (req.PathEquals("/db"u8))
@@ -197,7 +197,7 @@ var server = new Server(handler: async (req, res, ct) =>
     }
     else
     {
-        await res.WriteAsync(200, plainBody, textPlainCt, keepAlive: keepAlive, cancellationToken: ct);
+        await res.WriteAsync(200, plainBody, textPlainUtf8, keepAlive: keepAlive, cancellationToken: ct);
     }
 }, port: port);
 

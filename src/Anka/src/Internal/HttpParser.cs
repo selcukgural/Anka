@@ -9,7 +9,7 @@ namespace Anka;
 /// A copy of the <see cref="SequenceReader{T}"/> (<c>parser</c>) is used to
 /// scan and parse the request line, headers, and body simultaneously. The
 /// original reader is advanced only on success. Content-Length is extracted
-/// inline during header parsing so no second scan is needed.
+/// inline during header parsing, so no second scan is needed.
 ///
 /// HTTP method and version values are parsed as enums. Header names are
 /// normalised to lowercase in-place. If a body is present (Content-Length > 0),
@@ -44,7 +44,10 @@ internal static class HttpParser
         if (req.Buffer is null || req.Buffer.Length < bufSize)
         {
             if (req.Buffer is not null)
+            {
                 ArrayPool<byte>.Shared.Return(req.Buffer);
+            }
+            
             req.Buffer = ArrayPool<byte>.Shared.Rent(bufSize);
         }
 
@@ -95,7 +98,10 @@ internal static class HttpParser
             if (req.BodyBuffer is null || req.BodyBuffer.Length < (int)contentLength)
             {
                 if (req.BodyBuffer is not null)
+                {
                     ArrayPool<byte>.Shared.Return(req.BodyBuffer);
+                }
+                
                 req.BodyBuffer = ArrayPool<byte>.Shared.Rent((int)contentLength);
             }
 

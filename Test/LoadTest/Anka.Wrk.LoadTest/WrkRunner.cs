@@ -69,11 +69,9 @@ internal static partial class WrkRunner
         await proc.WaitForExitAsync();
 
         var full = stdout + "\n" + stderr;
-        return Parse(full, connections, url);
+        return Parse(full, connections);
     }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
+    
     private static string BuildArgs(string url, int connections, int duration, int threads, string? lua)
     {
         // wrk auto-caps threads at connection count
@@ -90,7 +88,7 @@ internal static partial class WrkRunner
         return sb.ToString();
     }
 
-    private static WrkResult Parse(string output, int connections, string url)
+    private static WrkResult Parse(string output, int connections)
     {
         var rps          = ParseDouble(RpsPattern, output, 1);
         var totalReqs    = ParseLong(RequestsTotalPattern, output, 1);
@@ -103,7 +101,6 @@ internal static partial class WrkRunner
         var p50          = ParsePercentileMs(LatencyPercentilePattern, output, 50.0);
 
         return new WrkResult(
-            Url:           url,
             Connections:   connections,
             RequestsPerSec: rps,
             TotalRequests: totalReqs,
@@ -113,8 +110,7 @@ internal static partial class WrkRunner
             P90Ms:         p90,
             P99Ms:         p99,
             P999Ms:        p999,
-            TransferMbSec: transferMbs,
-            RawOutput:     output);
+            TransferMbSec: transferMbs);
     }
 
     private static double ParseDouble(Regex re, string text, int group)
