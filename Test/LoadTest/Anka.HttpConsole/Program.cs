@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Anka;
 using Npgsql;
 
@@ -19,10 +21,10 @@ Console.CancelKeyPress += (_, e) =>
 
 // ── Pre-allocated static response bodies ─────────────────────────────────────
 
-var plainBody = "Hello from Anka!"u8.ToArray();
-var jsonBody     = """{"status":"ok","server":"Anka","version":"0.0.1","message":"Hello from Anka!"}"""u8.ToArray();
-var largeBody    = Encoding.ASCII.GetBytes(string.Concat(Enumerable.Repeat("Anka is a minimal, zero-allocation HTTP/1.x server for .NET. ", 36))); // ~2 KB
-var okBody = "OK"u8.ToArray();
+var plainBody     = "Hello from Anka!"u8.ToArray();
+var helloWorld    = "Hello, World!"u8.ToArray();
+var largeBody     = Encoding.ASCII.GetBytes(string.Concat(Enumerable.Repeat("Anka is a minimal, zero-allocation HTTP/1.x server for .NET. ", 36))); // ~2 KB
+var okBody        = "OK"u8.ToArray();
 
  ReadOnlyMemory<byte> textPlainCt = "text/plain; charset=utf-8"u8.ToArray();
  ReadOnlyMemory<byte> appJsonCt     = "application/json; charset=utf-8"u8.ToArray();
@@ -57,9 +59,19 @@ var server = new Server(handler: async (req, res, ct) =>
         await res.WriteAsync(200, plainBody, textPlainCt, keepAlive: keepAlive, cancellationToken: ct);
     }
     
+    // ── TFB: Plaintext ────────────────────────────────────────────────
+    else if (req.PathEquals("/plaintext"u8))
+    {
+        await res.WriteAsync(200, helloWorld, textPlainNoCt, keepAlive: keepAlive, cancellationToken: ct);
+    }
+    
     else if (req.PathEquals("/json"u8))
     {
-        await res.WriteAsync(200, jsonBody, appJsonCt, keepAlive: keepAlive, cancellationToken: ct);
+        // TFB: JSON Serialization — must serialize per-request, not pre-cached.
+        var json = JsonSerializer.SerializeToUtf8Bytes(
+            new TfbJsonMessage("Hello, World!"),
+            AppJsonContext.Default.TfbJsonMessage);
+        await res.WriteAsync(200, json, appJsonCt, keepAlive: keepAlive, cancellationToken: ct);
     }
 
     else if (req.PathEquals("/echo"u8))
@@ -150,7 +162,7 @@ var server = new Server(handler: async (req, res, ct) =>
             var qid    = rng.Next(1, 10001);
             var newRnd = rng.Next(1, 10001);
             await using var selectCmd = conn.CreateCommand();
-            selectCmd.CommandText = "SELECT id FROM world WHERE id = $1";
+            selectCmd.CommandText = "SELECT id, randomnumber FROM world WHERE id = $1";
             selectCmd.Parameters.AddWithValue(qid);
             await using var reader = await selectCmd.ExecuteReaderAsync(ct);
             await reader.ReadAsync(ct);
@@ -265,7 +277,7 @@ async Task PopulateWorldCacheAsync()
     {
         await using var cacheConn = await dataSource.OpenConnectionAsync();
         await using var cacheCmd  = cacheConn.CreateCommand();
-        cacheCmd.CommandText = "SELECT id, randomnumber FROM world";
+        cacheCmd.CommandText = "SELECT id, randomnumber FROM cachedworld";
         await using var cacheReader = await cacheCmd.ExecuteReaderAsync();
         while (await cacheReader.ReadAsync())
         {
@@ -277,3 +289,10 @@ async Task PopulateWorldCacheAsync()
         Console.WriteLine($"[warn] World cache population failed (DB not available?): {ex.Message}");
     }
 }
+
+// ── TFB JSON Serialization model ─────────────────────────────────────────────
+
+internal record struct TfbJsonMessage([property: JsonPropertyName("message")] string Message);
+
+[JsonSerializable(typeof(TfbJsonMessage))]
+internal partial class AppJsonContext : JsonSerializerContext { }

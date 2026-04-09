@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Buffers.Text;
+using System.Globalization;
 using System.Net.Sockets;
+using System.Text;
 
 namespace Anka;
 
@@ -249,6 +251,31 @@ public sealed class HttpResponseWriter : IDisposable
     private static ReadOnlySpan<byte> ContentLengthName => "Content-Length: "u8;
     private static ReadOnlySpan<byte> ContentTypeName => "Content-Type: "u8;
 
+    // Date header: cached and refreshed at most once per second.
+    // TFB General Requirement #5 mandates a Date header on every response.
+    private static volatile byte[] _cachedDateLine = BuildDateLine();
+    private static long _cachedDateTicks = DateTime.UtcNow.Ticks;
+
+    private static byte[] BuildDateLine()
+    {
+        var dateStr = DateTime.UtcNow.ToString("R", CultureInfo.InvariantCulture);
+        return Encoding.ASCII.GetBytes($"Date: {dateStr}\r\n");
+    }
+
+    private static ReadOnlySpan<byte> GetCurrentDateLine()
+    {
+        var nowTicks = DateTime.UtcNow.Ticks;
+
+        if (nowTicks - Interlocked.Read(ref _cachedDateTicks) < TimeSpan.TicksPerSecond)
+        {
+            return _cachedDateLine;
+        }
+
+        Interlocked.Exchange(ref _cachedDateTicks, nowTicks);
+        _cachedDateLine = BuildDateLine();
+        return _cachedDateLine;
+    }
+
     /// <summary>
     /// Writes the header block (and optionally an inline small body) into <paramref name="buf"/>
     /// and returns the number of bytes written.
@@ -277,6 +304,11 @@ public sealed class HttpResponseWriter : IDisposable
         pos += written;
         span[pos++] = (byte)'\r';
         span[pos++] = (byte)'\n';
+
+        // Date (TFB General Requirement #5) — refreshed at most once per second
+        var dateLine = GetCurrentDateLine();
+        dateLine.CopyTo(span[pos..]);
+        pos += dateLine.Length;
 
         // Connection
         var connHeader = keepAlive ? KeepAliveHeader : CloseHeader;

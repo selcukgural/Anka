@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Npgsql;
 
 var port = args.Length > 0 && int.TryParse(args[0], out var parsedPort) ? parsedPort : 8080;
@@ -15,7 +17,7 @@ var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
 var plainBody = "Hello from Anka!"u8.ToArray();
-var jsonBody = """{"status":"ok","server":"Anka","version":"0.0.1","message":"Hello from Anka!"}"""u8.ToArray();
+var helloWorld = "Hello, World!"u8.ToArray();
 var largeBody = Encoding.ASCII.GetBytes(string.Concat(Enumerable.Repeat("Anka is a minimal, zero-allocation HTTP/1.x server for .NET. ", 36)));
 var okBody = "OK"u8.ToArray();
 
@@ -51,7 +53,16 @@ var rng = Random.Shared;
 
 app.MapGet("/", ctx => WriteBytesAsync(ctx, plainBody, TextPlainUtf8));
 app.MapGet("/plain", ctx => WriteBytesAsync(ctx, plainBody, TextPlainUtf8));
-app.MapGet("/json", ctx => WriteBytesAsync(ctx, jsonBody, AppJsonUtf8));
+// TFB: Plaintext
+app.MapGet("/plaintext", ctx => WriteBytesAsync(ctx, helloWorld, TextPlain));
+// TFB: JSON Serialization — serialize per-request, not pre-cached
+app.MapGet("/json", ctx =>
+{
+    var json = JsonSerializer.SerializeToUtf8Bytes(
+        new TfbJsonMessage("Hello, World!"),
+        KestrelAppJsonContext.Default.TfbJsonMessage);
+    return WriteBytesAsync(ctx, json, AppJsonUtf8);
+});
 app.MapGet("/headers", ctx => WriteBytesAsync(ctx, plainBody, TextPlainUtf8));
 app.MapGet("/large", ctx => WriteBytesAsync(ctx, largeBody, TextPlainUtf8));
 app.MapGet("/health", ctx => WriteBytesAsync(ctx, okBody, TextPlain));
@@ -137,7 +148,7 @@ app.MapGet("/updates", async ctx =>
         var id = rng.Next(1, 10001);
         var newRandom = rng.Next(1, 10001);
         await using var selectCmd = conn.CreateCommand();
-        selectCmd.CommandText = "SELECT id FROM world WHERE id = $1";
+        selectCmd.CommandText = "SELECT id, randomnumber FROM world WHERE id = $1";
         selectCmd.Parameters.AddWithValue(id);
         await using var reader = await selectCmd.ExecuteReaderAsync(ctx.RequestAborted);
         await reader.ReadAsync(ctx.RequestAborted);
@@ -261,7 +272,7 @@ async Task PopulateWorldCacheAsync()
     {
         await using var cacheConn = await dataSource.OpenConnectionAsync();
         await using var cacheCmd = cacheConn.CreateCommand();
-        cacheCmd.CommandText = "SELECT id, randomnumber FROM world";
+        cacheCmd.CommandText = "SELECT id, randomnumber FROM cachedworld";
         await using var cacheReader = await cacheCmd.ExecuteReaderAsync();
         while (await cacheReader.ReadAsync())
         {
@@ -273,3 +284,10 @@ async Task PopulateWorldCacheAsync()
         Console.WriteLine($"[warn] World cache population failed (DB not available?): {ex.Message}");
     }
 }
+
+// ── TFB JSON Serialization model ─────────────────────────────────────────────
+
+internal record struct TfbJsonMessage([property: JsonPropertyName("message")] string Message);
+
+[JsonSerializable(typeof(TfbJsonMessage))]
+internal partial class KestrelAppJsonContext : JsonSerializerContext { }

@@ -19,8 +19,12 @@ internal static class Scenarios
             "Minimal `GET /plain` → 16 B `text/plain` response. Establishes the baseline throughput with the lowest possible overhead.",
             "/plain"),
 
+        new("TFB: Plaintext",
+            "`GET /plaintext` → `Hello, World!` `text/plain` response. Mirrors TechEmpower's *Plaintext* test.",
+            "/plaintext"),
+
         new("JSON API GET",
-            "`GET /json` → ~90 B `application/json` response. Reflects a typical read-only REST API endpoint.",
+            "`GET /json` → ~28 B `application/json` response. Mirrors TechEmpower's *JSON Serialization* test.",
             "/json"),
 
         new("GET with Multiple Headers",
