@@ -20,6 +20,7 @@
         <RepositoryUrl>https://github.com/selcukgural/Anka.git</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageIcon>anka-logo.png</PackageIcon>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <NoWarn>$(NoWarn);CS1591</NoWarn>
         <IncludeSymbols>true</IncludeSymbols>
@@ -30,6 +31,8 @@
     <ItemGroup>
         <!-- Include repository README in the NuGet package for the gallery page -->
         <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+        <!-- Include logo in the NuGet package -->
+        <None Include="anka-logo.png" Pack="true" PackagePath="\" />
     </ItemGroup>
 
     <ItemGroup>

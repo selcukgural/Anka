@@ -1,9 +1,23 @@
-# Anka
+<p align="center">
+  <img src="src/Anka/anka-logo.png" alt="Anka Logo" width="180" />
+</p>
 
-[![NuGet](https://img.shields.io/nuget/v/Anka.svg)](https://www.nuget.org/packages/Anka)
-[![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![.NET 8+](https://img.shields.io/badge/.NET-8.0%2B-512BD4)](https://dotnet.microsoft.com)
+<h1 align="center">Anka</h1>
+
+<p align="center">
+  <a href="https://www.nuget.org/packages/Anka"><img src="https://img.shields.io/nuget/v/Anka.svg" alt="NuGet" /></a>
+  <a href="https://www.nuget.org/packages/Anka"><img src="https://img.shields.io/nuget/dt/Anka.svg" alt="NuGet Downloads" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://dotnet.microsoft.com"><img src="https://img.shields.io/badge/.NET-8.0%2B-512BD4" alt=".NET 8+" /></a>
+  <img src="https://img.shields.io/badge/status-beta-orange" alt="Status: Beta" />
+</p>
+
+> ⚠️ **BETA — Research & Experimentation Only**
+>
+> Anka is in **early beta**. It is intended **solely for testing, research, and experimentation**.
+> **Do not use Anka in production environments.** The API is unstable, security hardening is incomplete,
+> and there are no guarantees around correctness, stability, or backwards compatibility.
+> Production use is strongly discouraged.
 
 Minimal HTTP/1.x server library for .NET 8+, built for **Native AOT** with a focus on minimising cold-start time and keeping steady-state allocation at zero.
 
@@ -34,6 +48,8 @@ dotnet add package Anka
 [![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
 
 Requires .NET 8 SDK or later.
+
+> **Note:** Anka is currently in beta. Use only for research and experimentation — not for production workloads.
 
 ---
 
@@ -76,7 +92,7 @@ var server = new Server(
     handler: async (req, res, ct) =>
     {
         var body = "Hello from Anka!"u8.ToArray();
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
     },
     port: 8080);
 
@@ -84,6 +100,30 @@ await server.StartAsync(cts.Token);
 ```
 
 Graceful shutdown with `Ctrl+C`.
+
+### Quick Start with Options
+
+```csharp
+var options = new ServerOptions
+{
+    MaxRequestBodySize = 1 * 1024 * 1024, // 1 MB
+    DefaultResponseHeaders =
+    [
+        new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
+        new HttpHeader("x-frame-options"u8.ToArray(), "DENY"u8.ToArray()),
+    ]
+};
+
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        await res.WriteAsync(200, "ok"u8.ToArray(), "text/plain; charset=utf-8"u8, cancellationToken: ct);
+    },
+    port: 8080,
+    options: options);
+
+await server.StartAsync(cts.Token);
+```
 
 ---
 
@@ -96,7 +136,7 @@ var server = new Server(
     handler: async (req, res, ct) =>
     {
         var body = "Hello, World!"u8.ToArray();
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
     },
     port: 8080);
 
@@ -110,7 +150,7 @@ var server = new Server(
     handler: async (req, res, ct) =>
     {
         var json = """{"message":"ok","version":"0.0.1"}"""u8.ToArray();
-        await res.WriteAsync(200, json, contentType: "application/json; charset=utf-8", cancellationToken: ct);
+        await res.WriteAsync(200, json, contentType: "application/json; charset=utf-8"u8, cancellationToken: ct);
     },
     port: 8080);
 ```
@@ -127,7 +167,7 @@ var server = new Server(
         var query = req.Query.ToString();
 
         var body = System.Text.Encoding.UTF8.GetBytes($"path={path} query={query}");
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
     },
     port: 8080);
 ```
@@ -142,7 +182,7 @@ var server = new Server(
         var ua = req.Headers.TryGetValue("user-agent", out var v) ? v.ToString() : "unknown";
 
         var body = System.Text.Encoding.UTF8.GetBytes($"User-Agent: {ua}");
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
     },
     port: 8080);
 ```
@@ -157,7 +197,7 @@ var server = new Server(
         var text = System.Text.Encoding.UTF8.GetString(req.Body.Span);
 
         var echo = System.Text.Encoding.UTF8.GetBytes($"echo: {text}");
-        await res.WriteAsync(200, echo, contentType: "text/plain; charset=utf-8", cancellationToken: ct);
+        await res.WriteAsync(200, echo, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
     },
     port: 8080);
 ```
@@ -171,11 +211,11 @@ var server = new Server(
         var path = req.Path.ToString();
         var method = req.Method.ToString();
 
-        (int status, byte[] body, string ct2) = (path, method) switch
+        (int status, byte[] body, ReadOnlyMemory<byte> ct2) = (path, method) switch
         {
-            ("/", "GET")     => (200, "Welcome!"u8.ToArray(),           "text/plain; charset=utf-8"),
-            ("/ping", "GET") => (200, """{"pong":true}"""u8.ToArray(),  "application/json; charset=utf-8"),
-            _                => (404, "Not Found"u8.ToArray(),          "text/plain; charset=utf-8")
+            ("/", "GET")     => (200, "Welcome!"u8.ToArray(),           (ReadOnlyMemory<byte>)"text/plain; charset=utf-8"u8.ToArray()),
+            ("/ping", "GET") => (200, """{"pong":true}"""u8.ToArray(),  (ReadOnlyMemory<byte>)"application/json; charset=utf-8"u8.ToArray()),
+            _                => (404, "Not Found"u8.ToArray(),          (ReadOnlyMemory<byte>)"text/plain; charset=utf-8"u8.ToArray())
         };
 
         await res.WriteAsync(status, body, contentType: ct2, cancellationToken: ct);
@@ -183,7 +223,64 @@ var server = new Server(
     port: 8080);
 ```
 
----
+### Adding Per-Request Response Headers (Fluent API)
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        var body = """{"status":"ok"}"""u8.ToArray();
+
+        // Fluent AddHeader chains extra headers onto the response.
+        // For zero-allocation hot paths, pre-build a static readonly HttpHeader[] instead.
+        await res
+            .AddHeader(HttpHeaderNames.AccessControlAllowOrigin, "*"u8)
+            .AddHeader(HttpHeaderNames.AccessControlAllowMethods, "GET, POST"u8)
+            .WriteAsync(200, body, "application/json; charset=utf-8"u8, keepAlive: true, ct);
+    },
+    port: 8080);
+```
+
+### Redirect
+
+```csharp
+var server = new Server(
+    handler: async (req, res, ct) =>
+    {
+        await res
+            .AddHeader(HttpHeaderNames.Location, "/new-path"u8)
+            .WriteAsync(301, default, default, keepAlive: false, ct);
+    },
+    port: 8080);
+```
+
+### Default Response Headers (Global Security Headers)
+
+```csharp
+var options = new ServerOptions
+{
+    DefaultResponseHeaders =
+    [
+        new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
+        new HttpHeader("x-frame-options"u8.ToArray(),        "DENY"u8.ToArray()),
+        new HttpHeader("x-xss-protection"u8.ToArray(),       "1; mode=block"u8.ToArray()),
+    ]
+};
+
+var server = new Server(handler, port: 8080, options: options);
+```
+
+### Enforcing a Request Body Size Limit
+
+```csharp
+// Requests with a body exceeding 512 KB automatically receive 413 Payload Too Large.
+var options = new ServerOptions
+{
+    MaxRequestBodySize = 512 * 1024
+};
+
+var server = new Server(handler, port: 8080, options: options);
+```
 
 ---
 
@@ -236,7 +333,7 @@ Access:    public sealed
 **Constructor**
 
 ```csharp
-Server(RequestHandler handler, int port, string host = "127.0.0.1")
+Server(RequestHandler handler, int port, string host = "127.0.0.1", ServerOptions? options = null)
 ```
 
 | Parameter | Description                                      |
@@ -244,9 +341,18 @@ Server(RequestHandler handler, int port, string host = "127.0.0.1")
 | `handler` | Delegate called for every HTTP request           |
 | `port`    | TCP port number (1–65535)                        |
 | `host`    | IPv4 address to listen on (default: `127.0.0.1`) |
+| `options` | Optional server configuration (see `ServerOptions`). Uses sensible defaults when `null`. |
+
+**Event**
+
+```csharp
+event Action<IPEndPoint>? ListeningStarted
+```
+
+Raised once the listening socket has been bound. Useful for startup instrumentation and readiness probes.
 
 **Thrown Exceptions:**
-- `AnkaPortOutOfRageException` — port is outside the 1–65535 range
+- `AnkaOutOfRangeException` — port is outside the 1–65535 range
 - `AnkaArgumentException` — invalid IP address
 
 **Method**
@@ -293,26 +399,39 @@ Access:    public sealed
 
 Writes an HTTP/1.1 response. Zero string allocation via `ArrayPool` + `Utf8Formatter`.
 
-**Method**
+**Methods**
 
 ```csharp
+// Simple overload — no extra headers
 ValueTask WriteAsync(
     int statusCode,
     ReadOnlyMemory<byte> body           = default,
-    string? contentType                 = null,
+    ReadOnlyMemory<byte> contentType    = default,
     bool keepAlive                      = true,
+    CancellationToken cancellationToken = default)
+
+// Full overload — with per-request extra headers
+ValueTask WriteAsync(
+    int statusCode,
+    ReadOnlyMemory<byte> body,
+    ReadOnlyMemory<byte> contentType,
+    bool keepAlive,
+    ReadOnlySpan<HttpHeader> extraHeaders,
     CancellationToken cancellationToken = default)
 ```
 
-| Parameter      | Description                                            |
-|----------------|--------------------------------------------------------|
-| `statusCode`   | HTTP status code (200, 404, 500, etc.)                 |
-| `body`         | Response body (optional)                               |
-| `contentType`  | Content-Type header value (optional)                   |
-| `keepAlive`    | `Connection: keep-alive` or `close`?                   |
+| Parameter      | Description                                                                        |
+|----------------|------------------------------------------------------------------------------------|
+| `statusCode`   | HTTP status code (200, 404, 500, etc.)                                             |
+| `body`         | Response body (optional)                                                           |
+| `contentType`  | Content-Type header value as UTF-8 bytes (e.g., `"application/json"u8`)            |
+| `keepAlive`    | `Connection: keep-alive` or `close`?                                               |
+| `extraHeaders` | Zero-allocation per-request headers. Pre-build a `static readonly HttpHeader[]` for hot paths. |
+
+> **Fluent API:** Use `response.AddHeader(name, value).WriteAsync(...)` to attach extra headers without building an array. See `HttpResponseWriterExtensions`.
 
 **Supported Status Code Reason Phrases:**
-200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 500 Internal Server Error · 503 Service Unavailable · others → "Unknown"
+200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · others → "Unknown"
 
 ---
 
@@ -355,6 +474,9 @@ Provides commonly used header names as lowercase `ReadOnlySpan<byte>`.
 ```
 Host · Connection · ContentLength · ContentType · TransferEncoding
 Accept · AcceptEncoding · Authorization · UserAgent · CacheControl · Cookie · Origin · Referer
+Location · SetCookie · ETag · Vary · Date · Server
+AccessControlAllowOrigin · AccessControlAllowMethods · AccessControlAllowHeaders
+AccessControlMaxAge · AccessControlExposeHeaders
 ```
 
 ---
@@ -394,9 +516,91 @@ The user callback passed to the server. Called for every HTTP request.
 
 Derives from `ArgumentException`. Thrown when an invalid argument is provided (e.g. invalid IP).
 
-### `AnkaPortOutOfRageException`
+### `AnkaOutOfRangeException`
 
-Derives from `ArgumentOutOfRangeException`. Thrown when the port is outside the 1–65535 range.
+Derives from `ArgumentOutOfRangeException`. Thrown when a numeric argument is outside its valid range — port outside 1–65535, or `ServerOptions.MaxRequestBodySize` set to a negative value.
+
+---
+
+### `ServerOptions`
+
+```
+Namespace: Anka
+Access:    public sealed
+```
+
+Optional configuration passed to the `Server` constructor. All properties are optional; when `null`, the server picks sensible defaults that scale with processor count.
+
+| Property                  | Type                         | Default                          | Description                                                                                                     |
+|---------------------------|------------------------------|----------------------------------|-----------------------------------------------------------------------------------------------------------------|
+| `MinThreadPoolThreads`    | `int?`                       | `ProcessorCount * 2 + 2`         | Minimum worker/IO-completion threads for `ThreadPool`. Never overrides downward.                                |
+| `AcceptorCount`           | `int?`                       | `max(ProcessorCount / 2, 2)`     | Number of parallel accept loops.                                                                                |
+| `Backlog`                 | `int`                        | `512`                            | Backlog passed to `Socket.Listen()`.                                                                            |
+| `DefaultResponseHeaders`  | `IReadOnlyList<HttpHeader>`  | `[]`                             | Headers appended to every response (e.g., security headers). Allocated once at startup — zero per-request cost. |
+| `MaxRequestBodySize`      | `int?`                       | `null` (unlimited)               | Maximum allowed request body in bytes. Requests that exceed this limit automatically receive `413 Payload Too Large`. |
+
+**Example:**
+
+```csharp
+var options = new ServerOptions
+{
+    AcceptorCount      = 4,
+    MaxRequestBodySize = 1 * 1024 * 1024,  // 1 MB
+    DefaultResponseHeaders =
+    [
+        new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
+        new HttpHeader("x-frame-options"u8.ToArray(),        "DENY"u8.ToArray()),
+    ]
+};
+```
+
+---
+
+### `HttpHeader`
+
+```
+Namespace: Anka
+Access:    public readonly struct
+```
+
+A name/value pair for HTTP response headers. Create instances once at startup and store in `static readonly` arrays for zero per-request allocation.
+
+```csharp
+// Byte-based (zero allocation at call time — preferred for hot paths)
+new HttpHeader("x-custom-header"u8.ToArray(), "value"u8.ToArray())
+
+// String-based (allocates — use at startup only)
+new HttpHeader("x-custom-header", "value")
+```
+
+| Member  | Type                    | Description                          |
+|---------|-------------------------|--------------------------------------|
+| `Name`  | `ReadOnlyMemory<byte>`  | Header name as lowercase ASCII bytes |
+| `Value` | `ReadOnlyMemory<byte>`  | Header value as ASCII/UTF-8 bytes    |
+
+---
+
+### `ResponseContext`
+
+```
+Namespace: Anka
+Access:    public readonly struct
+```
+
+A fluent builder for attaching extra per-request response headers. Obtained via `HttpResponseWriter.AddHeader(...)` (see `HttpResponseWriterExtensions`).
+
+```csharp
+await response
+    .AddHeader(HttpHeaderNames.Location, "/new-path"u8)
+    .WriteAsync(301, default, default, keepAlive: false, ct);
+
+await response
+    .AddHeader(HttpHeaderNames.AccessControlAllowOrigin, "*"u8)
+    .AddHeader(HttpHeaderNames.AccessControlAllowMethods, "GET, POST"u8)
+    .WriteAsync(200, body, "application/json; charset=utf-8"u8, keepAlive: true, ct);
+```
+
+> For zero-allocation hot paths, pass a `static readonly HttpHeader[]` directly to `WriteAsync` instead of using the fluent API (which allocates a `List<T>` per call).
 
 ---
 
@@ -633,16 +837,21 @@ Anka/
 │
 ├── Anka/                          ← Library
 │   ├── Anka.csproj                  (AOT, InternalsVisibleTo: Test + Benchmark)
+│   ├── anka-logo.png                (package icon)
 │   └── src/
 │       ├── Core/                  ← Public API
+│       │   ├── HttpHeader.cs        (name/value pair struct for response headers)
 │       │   ├── HttpHeaderNames.cs   (pre-defined header name constants)
 │       │   ├── HttpHeaders.cs       (zero-alloc header struct, InlineArray)
 │       │   ├── HttpMethod.cs        (enum: byte)
 │       │   ├── HttpRequest.cs       (parsed request + buffer ownership)
 │       │   ├── HttpResponseWriter.cs(response writer, ArrayPool)
+│       │   ├── HttpResponseWriterExtensions.cs (fluent AddHeader API)
 │       │   ├── HttpVersion.cs       (enum: byte)
 │       │   ├── RequestHandler.cs    (delegate definition)
-│       │   └── Server.cs            (public entry point)
+│       │   ├── ResponseContext.cs   (fluent header builder)
+│       │   ├── Server.cs            (public entry point)
+│       │   └── ServerOptions.cs     (optional server configuration)
 │       ├── Internal/              ← Implementation details (internal)
 │       │   ├── Connection.cs        (socket lifecycle + sliding receive window)
 │       │   ├── HttpMethodParser.cs  (byte span → HttpMethod enum)
@@ -652,17 +861,20 @@ Anka/
 │       │   └── SocketReceiver.cs    (zero-alloc SocketAsyncEventArgs + IValueTaskSource)
 │       └── Exceptions/
 │           ├── AnkaArgumentException.cs
-│           └── AnkaPortOutOfRageException.cs
+│           └── AnkaOutOfRangeException.cs
 │
 ├── Anka.Console/                  ← Sample application
 │   └── Program.cs                   (Hello World server on :8080)
 │
 ├── Anka.Test/                     ← xUnit tests
+│   ├── ContentLengthValidationTests.cs
+│   ├── CustomResponseHeaderTests.cs
 │   ├── HttpHeadersTests.cs
 │   ├── HttpMethodParserTests.cs
 │   ├── HttpParserTests.cs
 │   ├── HttpRequestTests.cs
 │   ├── HttpVersionParserTests.cs
+│   ├── RequestBodySizeLimitTests.cs
 │   └── ServerTests.cs
 │
 ├── Test/LoadTest/
