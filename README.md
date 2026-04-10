@@ -1,18 +1,14 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/selcukgural/Anka/main/src/Anka/anka-logo.png" alt="Anka Logo" width="180" />
-</p>
+![Anka Logo](https://raw.githubusercontent.com/selcukgural/Anka/main/src/Anka/anka-logo.png)
 
-<h1 align="center">Anka</h1>
+# Anka
 
-<p align="center">
-  <a href="https://www.nuget.org/packages/Anka"><img src="https://img.shields.io/nuget/v/Anka.svg" alt="NuGet" /></a>
-  <a href="https://www.nuget.org/packages/Anka"><img src="https://img.shields.io/nuget/dt/Anka.svg" alt="NuGet Downloads" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-  <a href="https://dotnet.microsoft.com"><img src="https://img.shields.io/badge/.NET-8.0%2B-512BD4" alt=".NET 8+" /></a>
-  <img src="https://img.shields.io/badge/cold--start%20ready-2.3%20ms-brightgreen" alt="Cold Start: 2.3ms" />
-  <img src="https://img.shields.io/badge/startup%20alloc-124.5%20KB-brightgreen" alt="Startup Alloc: 124.5 KB" />
-  <img src="https://img.shields.io/badge/status-beta-orange" alt="Status: Beta" />
-</p>
+[![NuGet](https://img.shields.io/nuget/v/Anka.svg)](https://www.nuget.org/packages/Anka)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![.NET 8+](https://img.shields.io/badge/.NET-8.0%2B-512BD4)](https://dotnet.microsoft.com)
+[![Cold Start: 2.3ms](https://img.shields.io/badge/cold--start%20ready-2.3%20ms-brightgreen)](#cold-start--measured-results)
+[![Startup Alloc: 124.5 KB](https://img.shields.io/badge/startup%20alloc-124.5%20KB-brightgreen)](#cold-start--measured-results)
+[![Status: Beta](https://img.shields.io/badge/status-beta-orange)](#)
 
 > ⚠️ **BETA — Research & Experimentation Only**
 >
