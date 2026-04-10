@@ -573,9 +573,16 @@ public sealed class HttpResponseWriter : IDisposable
         403 => "Forbidden"u8,
         404 => "Not Found"u8,
         405 => "Method Not Allowed"u8,
+        411 => "Length Required"u8,
+        413 => "Payload Too Large"u8,
+        415 => "Unsupported Media Type"u8,
+        429 => "Too Many Requests"u8,
+        431 => "Request Header Fields Too Large"u8,
         500 => "Internal Server Error"u8,
         501 => "Not Implemented"u8,
         503 => "Service Unavailable"u8,
+        504 => "Gateway Timeout"u8,
+        505 => "HTTP Version Not Supported"u8,
         _   => "Unknown"u8,
     };
 }

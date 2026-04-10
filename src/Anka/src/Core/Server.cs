@@ -75,7 +75,9 @@ public sealed class Server
         ThreadPool.GetMinThreads(out var currentMin, out var currentMinIO);
         var desiredMin = _options.MinThreadPoolThreads ?? Environment.ProcessorCount * 2 + 2;
         if (desiredMin > currentMin)
+        {
             ThreadPool.SetMinThreads(desiredMin, Math.Max(desiredMin, currentMinIO));
+        }
 
         using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 

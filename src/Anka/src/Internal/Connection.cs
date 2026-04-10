@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Net.Sockets;
+using Anka.Extensions;
 
 namespace Anka;
 
@@ -52,7 +53,7 @@ internal sealed class Connection
         // Closing the socket aborts any pending SocketAsyncEventArgs operation,
         // which causes ReceiveAsync to throw SocketException — caught below.
         await using var reg = _cancellationToken.Register(static s => ((Socket)s!).Close(), _socket);
-
+        
         try
         {
             var start = 0; // first unread byte
@@ -61,12 +62,12 @@ internal sealed class Connection
             while (true)
             {
                 // Avoid copying unread bytes after every request. Keep a sliding window and
-                // compact only when the receive buffer has no writable tail left.
+                // compact only when the reception buffer has no writable tail left.
                 if (end == buf.Length)
                 {
                     if (start == 0)
                     {
-                        break; // request larger than the receive buffer
+                        break; // request larger than the reception buffer
                     }
 
                     buf.AsSpan(start, end - start).CopyTo(buf);
@@ -107,6 +108,12 @@ internal sealed class Connection
                         return;
                     }
 
+                    if (!request.ValidateContentLengthFor411())
+                    {
+                        await writer.WriteAsync(411, keepAlive: false, cancellationToken: _cancellationToken);
+                        return;
+                    }
+                    
                     try
                     {
                         await _handler(request, writer, _cancellationToken);
