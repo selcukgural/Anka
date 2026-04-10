@@ -1,5 +1,3 @@
-![Anka Logo](https://raw.githubusercontent.com/selcukgural/Anka/main/src/Anka/anka-logo.png)
-
 # Anka
 
 [![NuGet](https://img.shields.io/nuget/v/Anka.svg)](https://www.nuget.org/packages/Anka)
