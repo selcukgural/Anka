@@ -1,3 +1,5 @@
+using Anka.Exceptions;
+
 namespace Anka;
 
 /// <summary>
@@ -7,6 +9,8 @@ namespace Anka;
 /// </summary>
 public sealed class ServerOptions
 {
+    private int? _maxRequestBodySize;
+
     /// <summary>
     /// The minimum number of worker and I/O-completion threads that
     /// <see cref="System.Threading.ThreadPool"/> should keep alive.
@@ -53,4 +57,33 @@ public sealed class ServerOptions
     /// </code>
     /// </remarks>
     public IReadOnlyList<HttpHeader> DefaultResponseHeaders { get; init; } = [];
+
+    /// <summary>
+    /// Specifies the maximum allowed size, in bytes, for the HTTP request body.
+    /// <para>
+    /// When set to a non-<see langword="null"/> value, requests with a body size
+    /// exceeding the specified limit will receive a 413 (Payload Too Large) response,
+    /// and the connection will be closed. This property does not apply to requests
+    /// that use chunked transfer encoding, which are rejected with a 501 (Not Implemented) response.
+    /// </para>
+    /// <para>
+    /// A <see langword="null"/> value (the default) imposes no limit on the size of the request body.
+    /// </para>
+    /// <exception cref="AnkaOutOfRangeException">
+    /// Thrown when an attempt is made to set a negative value.
+    /// </exception>
+    /// </summary>
+    public int? MaxRequestBodySize  
+    {
+        get => _maxRequestBodySize;
+        set
+        {
+            if (value < 0)
+            {
+                throw new AnkaOutOfRangeException(nameof(MaxRequestBodySize), "Value must be non-negative.");
+            }
+            
+            _maxRequestBodySize = value;
+        }
+    }
 }

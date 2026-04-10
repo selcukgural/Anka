@@ -22,14 +22,14 @@ internal sealed class Connection
 
     private readonly Socket _socket;
     private readonly RequestHandler _handler;
-    private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
+    private readonly ServerOptions _serverOptions;
     private readonly CancellationToken _cancellationToken;
 
-    private Connection(Socket socket, RequestHandler handler, IReadOnlyList<HttpHeader> defaultHeaders, CancellationToken cancellationToken)
+    private Connection(Socket socket, RequestHandler handler, ServerOptions serverOptions, CancellationToken cancellationToken)
     {
         _socket         = socket;
         _handler        = handler;
-        _defaultHeaders = defaultHeaders;
+        _serverOptions  = serverOptions;
         _cancellationToken = cancellationToken;
     }
 
@@ -37,17 +37,17 @@ internal sealed class Connection
     /// Creates a <see cref="Connection"/> for <paramref name="socket"/> and starts processing it.
     /// Returns a <see cref="Task"/> that completes when the connection closes.
     /// </summary>
-    public static Task RunAsync(Socket socket, RequestHandler handler, IReadOnlyList<HttpHeader> defaultHeaders, CancellationToken cancellationToken)
+    public static Task RunAsync(Socket socket, RequestHandler handler, ServerOptions serverOptions, CancellationToken cancellationToken)
     {
         socket.NoDelay = true;
-        return new Connection(socket, handler, defaultHeaders, cancellationToken).ProcessAsync();
+        return new Connection(socket, handler, serverOptions, cancellationToken).ProcessAsync();
     }
 
     private async Task ProcessAsync()
     {
         var buf = ArrayPool<byte>.Shared.Rent(BufferSize);
         var request = HttpRequestPool.Rent();
-        using var writer = new HttpResponseWriter(_socket, _defaultHeaders);
+        using var writer = new HttpResponseWriter(_socket, _serverOptions.DefaultResponseHeaders);
         using var receiver = new SocketReceiver();
 
         // Closing the socket aborts any pending SocketAsyncEventArgs operation,
@@ -111,6 +111,12 @@ internal sealed class Connection
                     if (!request.ValidateContentLengthFor411())
                     {
                         await writer.WriteAsync(411, keepAlive: false, cancellationToken: _cancellationToken);
+                        return;
+                    }
+                    
+                    if (!request.IsRequestBodySizeWithinLimit(_serverOptions.MaxRequestBodySize))
+                    {
+                        await writer.WriteAsync(413, keepAlive: false, cancellationToken: _cancellationToken);
                         return;
                     }
                     

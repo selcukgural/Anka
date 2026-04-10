@@ -45,25 +45,25 @@ public class ServerTests
     [Fact]
     public void Constructor_PortZero_ThrowsAnkaPortOutOfRageException()
     {
-        Assert.Throws<AnkaPortOutOfRageException>(() => new Server(NoopHandler, 0));
+        Assert.Throws<AnkaOutOfRangeException>(() => new Server(NoopHandler, 0));
     }
 
     [Fact]
     public void Constructor_PortNegative_ThrowsAnkaPortOutOfRageException()
     {
-        Assert.Throws<AnkaPortOutOfRageException>(() => new Server(NoopHandler, -1));
+        Assert.Throws<AnkaOutOfRangeException>(() => new Server(NoopHandler, -1));
     }
 
     [Fact]
     public void Constructor_Port65536_ThrowsAnkaPortOutOfRageException()
     {
-        Assert.Throws<AnkaPortOutOfRageException>(() => new Server(NoopHandler, 65536));
+        Assert.Throws<AnkaOutOfRangeException>(() => new Server(NoopHandler, 65536));
     }
 
     [Fact]
     public void Constructor_PortMaxInt_ThrowsAnkaPortOutOfRageException()
     {
-        Assert.Throws<AnkaPortOutOfRageException>(() => new Server(NoopHandler, int.MaxValue));
+        Assert.Throws<AnkaOutOfRangeException>(() => new Server(NoopHandler, int.MaxValue));
     }
 
     [Fact]

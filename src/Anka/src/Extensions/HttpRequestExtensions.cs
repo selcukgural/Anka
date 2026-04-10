@@ -24,12 +24,43 @@ internal static class HttpRequestExtensions
             return true;
         }
  
-        // RFC 9110 §8.6)
+        // RFC 9110 §8.6
         if (!request.Headers.TryGetValue(HttpHeaderNames.ContentLength, out var value))
         {
             return true;
         }
  
         return int.TryParse(value, out var length) && length >= 0;
+    }
+
+    /// <summary>
+    /// Determines whether the size of the request body is within the specified maximum limit, based on
+    /// the "Content-Length" header from the request. If no limit is specified, or if the header is not present
+    /// or valid, the method assumes the size is acceptable.
+    /// </summary>
+    /// <param name="request">
+    /// The HTTP request containing headers that specify the size of the body to validate.
+    /// </param>
+    /// <param name="maxRequestBodySize">
+    /// The maximum allowable size for the request body, expressed as an integer in bytes. A null value
+    /// indicates no limit is enforced.
+    /// </param>
+    /// <returns>
+    /// Returns true if the size of the request body is within the specified limit, there is no limit set,
+    /// or the "Content-Length" header is not provided. Returns false if the size exceeds the specified limit.
+    /// </returns>
+    public static bool IsRequestBodySizeWithinLimit(this HttpRequest request, int? maxRequestBodySize)
+    {
+        if(maxRequestBodySize is null)
+        {
+            return true;
+        }
+        
+        if (request.Headers.TryGetValue(HttpHeaderNames.ContentLength, out var value) && int.TryParse(value, out var length))
+        {
+            return length <= maxRequestBodySize.Value;
+        }
+        
+        return true;
     }
 }
