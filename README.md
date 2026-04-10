@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src/Anka/anka-logo.png" alt="Anka Logo" width="180" />
+  <img src="https://raw.githubusercontent.com/selcukgural/Anka/main/src/Anka/anka-logo.png" alt="Anka Logo" width="180" />
 </p>
 
 <h1 align="center">Anka</h1>
