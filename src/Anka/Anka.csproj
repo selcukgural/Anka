@@ -10,7 +10,7 @@
 
         <!-- NuGet package metadata -->
         <PackageId>Anka</PackageId>
-        <Version>0.0.1</Version>
+        <Version>0.0.2</Version>
         <Authors>Selçuk Güral</Authors>
         <Description>Minimal zero-allocation HTTP/1.x server for .NET 8+. Native AOT compatible. Built on raw sockets with a sliding receive window and pooled buffers for an allocation-free steady-state fast path.</Description>
         <PackageTags>http;server;aot;native-aot;zero-allocation;high-performance;minimal;networking;tcp;http1</PackageTags>
