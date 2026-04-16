@@ -117,7 +117,7 @@ public sealed class HttpRequest
     public bool IsKeepAlive { get; internal set; }
 
     /// <summary>
-    /// Indicates that the request used a chunked transfer-encoding body, which Anka does not support.
+    /// Indicates that the request uses chunked transfer-encoding for its body.
     /// </summary>
     internal bool HasChunkedTransferEncoding { get; set; }
 

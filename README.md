@@ -116,6 +116,7 @@ var options = new ServerOptions
     MaxRequestBodySize = 1 * 1024 * 1024, // 1 MB
     MaxRequestTargetSize = 8 * 1024,      // 8 KB
     MaxRequestHeadersSize = 8 * 1024,     // 8 KB
+    ReadTimeout = TimeSpan.FromSeconds(15),
     DefaultResponseHeaders =
     [
         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
@@ -218,6 +219,8 @@ Responses to `HEAD` requests and `304 Not Modified` responses suppress payload b
 `HTTP/1.1` requests must include a `Host` header. Requests that omit it are rejected with `400 Bad Request`.
 
 Malformed HTTP version tokens are rejected with `400 Bad Request`. Well-formed but unsupported versions such as `HTTP/2.0` are rejected with `505 HTTP Version Not Supported`.
+
+Repeated headers can be enumerated via `HttpHeaders.TryGetAllValues(...)`. `Expect: 100-continue` is handled automatically, and chunked request bodies are decoded into `req.Body` before the handler runs.
 
 ### Simple Path-Based Routing
 
@@ -572,6 +575,7 @@ Optional configuration passed to the `Server` constructor. All properties are op
 | `MaxRequestBodySize`      | `int?`                       | `null` (unlimited)               | Maximum allowed request body in bytes. Requests that exceed this limit automatically receive `413 Payload Too Large`. |
 | `MaxRequestTargetSize`    | `int?`                       | `null` (unlimited)               | Maximum allowed request-target size in bytes. Requests that exceed this limit automatically receive `414 URI Too Long`. |
 | `MaxRequestHeadersSize`   | `int`                        | `8192`                           | Maximum allowed aggregate size of request header names and values. Requests that exceed this limit, or the built-in header-count cap, automatically receive `431 Request Header Fields Too Large`. |
+| `ReadTimeout`             | `TimeSpan?`                  | `null`                           | Optional idle read timeout used to close stalled connections and mitigate Slowloris-style requests. |
 
 **Example:**
 
@@ -582,6 +586,7 @@ var options = new ServerOptions
     MaxRequestBodySize   = 1 * 1024 * 1024,  // 1 MB
     MaxRequestTargetSize = 8 * 1024,         // 8 KB
     MaxRequestHeadersSize = 8 * 1024,        // 8 KB
+    ReadTimeout = TimeSpan.FromSeconds(15),
     DefaultResponseHeaders =
     [
         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),

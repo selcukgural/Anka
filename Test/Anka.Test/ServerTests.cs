@@ -128,6 +128,14 @@ public class ServerTests
         Assert.Null(options.MinThreadPoolThreads);
         Assert.Null(options.AcceptorCount);
         Assert.Equal(512, options.Backlog);
+        Assert.Null(options.ReadTimeout);
+    }
+
+    [Fact]
+    public void ServerOptions_ReadTimeout_Negative_ThrowsAnkaOutOfRangeException()
+    {
+        var options = new ServerOptions();
+        Assert.Throws<AnkaOutOfRangeException>(() => options.ReadTimeout = TimeSpan.FromMilliseconds(-1));
     }
 
     private static int GetFreePort()

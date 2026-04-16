@@ -20,6 +20,11 @@ public static class HttpHeaderNames
     public static ReadOnlySpan<byte> UserAgent => "user-agent"u8;
     public static ReadOnlySpan<byte> CacheControl => "cache-control"u8;
     public static ReadOnlySpan<byte> Cookie => "cookie"u8;
+    public static ReadOnlySpan<byte> Expect => "expect"u8;
+    public static ReadOnlySpan<byte> IfMatch => "if-match"u8;
+    public static ReadOnlySpan<byte> IfNoneMatch => "if-none-match"u8;
+    public static ReadOnlySpan<byte> IfModifiedSince => "if-modified-since"u8;
+    public static ReadOnlySpan<byte> IfUnmodifiedSince => "if-unmodified-since"u8;
     public static ReadOnlySpan<byte> Origin => "origin"u8;
     public static ReadOnlySpan<byte> Referer => "referer"u8;
 

@@ -171,6 +171,80 @@ public struct HttpHeaders
     /// </remarks>
     public int Count => _count;
 
+    /// <summary>
+    /// Represents all values stored for a repeated header name.
+    /// </summary>
+    public readonly ref struct HeaderValues
+    {
+        private readonly HttpHeaders _headers;
+        private readonly ReadOnlySpan<byte> _lowercaseName;
+
+        internal HeaderValues(HttpHeaders headers, ReadOnlySpan<byte> lowercaseName)
+        {
+            _headers        = headers;
+            _lowercaseName  = lowercaseName;
+        }
+
+        public Enumerator GetEnumerator() => new(_headers, _lowercaseName);
+
+        public ref struct Enumerator
+        {
+            private readonly HttpHeaders _headers;
+            private readonly ReadOnlySpan<byte> _lowercaseName;
+            private int _index;
+
+            internal Enumerator(HttpHeaders headers, ReadOnlySpan<byte> lowercaseName)
+            {
+                _headers = headers;
+                _lowercaseName = lowercaseName;
+                _index = -1;
+                Current = default;
+            }
+
+            public ReadOnlySpan<byte> Current { get; private set; }
+
+            public bool MoveNext()
+            {
+                var buf = _headers._buf.AsSpan();
+                while (++_index < _headers._count)
+                {
+                    var entry = _headers._entries[_index];
+                    if (entry.NameLength != _lowercaseName.Length ||
+                        !buf.Slice(entry.NameOffset, entry.NameLength).SequenceEqual(_lowercaseName))
+                    {
+                        continue;
+                    }
+
+                    Current = buf.Slice(entry.ValueOffset, entry.ValueLength);
+                    return true;
+                }
+
+                Current = default;
+                return false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Attempts to retrieve all values stored for a repeated header name without allocating.
+    /// </summary>
+    public bool TryGetAllValues(ReadOnlySpan<byte> lowercaseName, out HeaderValues values)
+    {
+        values = new HeaderValues(this, lowercaseName);
+        var buf = _buf.AsSpan();
+        for (var i = 0; i < _count; i++)
+        {
+            var entry = _entries[i];
+            if (entry.NameLength == lowercaseName.Length &&
+                buf.Slice(entry.NameOffset, entry.NameLength).SequenceEqual(lowercaseName))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Attempts to retrieve the value of a header by its name without allocating memory. <paramref name="lowercaseName"/> must already be lowercase.</summary>
     /// <param name="lowercaseName">The name of the header to look up, in lowercase.</param>
     /// <param name="value">When the method returns, contains the value of the header if it was found; otherwise, contains the default value.</param>

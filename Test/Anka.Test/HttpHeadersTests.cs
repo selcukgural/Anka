@@ -135,4 +135,23 @@ public class HttpHeadersTests
         Assert.True(value.SequenceEqual("a=1"u8));
         Assert.Equal(2, headers.Count);
     }
+
+    [Fact]
+    public void TryGetAllValues_DuplicateHeaderName_ReturnsAllValuesInOrder()
+    {
+        var headers = CreateHeaders();
+        headers.Add("Set-Cookie"u8, "a=1"u8);
+        headers.Add("Set-Cookie"u8, "b=2"u8);
+        headers.Add("Set-Cookie"u8, "c=3"u8);
+
+        Assert.True(headers.TryGetAllValues("set-cookie"u8, out var values));
+
+        var collected = new List<string>();
+        foreach (var value in values)
+        {
+            collected.Add(System.Text.Encoding.ASCII.GetString(value));
+        }
+
+        Assert.Equal(["a=1", "b=2", "c=3"], collected);
+    }
 }

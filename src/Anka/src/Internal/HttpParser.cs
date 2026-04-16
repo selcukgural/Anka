@@ -34,7 +34,77 @@ internal static class HttpParser
     {
         // Work on a copy so the original reader advances only on success.
         var parser = reader;
+        var headerResult = TryParseHeadersCore(ref parser, req, maxRequestTargetSize, maxRequestHeadersSize);
+        if (headerResult != HttpParseResult.Success)
+        {
+            return headerResult;
+        }
 
+        // Body
+        if (req is { HasChunkedTransferEncoding: false, HasContentLength: true, HasInvalidContentLength: false, ContentLength: > 0 })
+        {
+            if (parser.Remaining < req.ContentLength)
+            {
+                return HttpParseResult.Incomplete;
+            }
+
+            // Reuse existing body buffer if large enough.
+            if (req.BodyBuffer is null || req.BodyBuffer.Length < (int)req.ContentLength)
+            {
+                if (req.BodyBuffer is not null)
+                {
+                    ArrayPool<byte>.Shared.Return(req.BodyBuffer);
+                }
+                
+                req.BodyBuffer = ArrayPool<byte>.Shared.Rent((int)req.ContentLength);
+            }
+
+            parser.TryCopyTo(req.BodyBuffer.AsSpan(0, (int)req.ContentLength));
+            parser.Advance(req.ContentLength);
+            req.Body = req.BodyBuffer.AsMemory(0, (int)req.ContentLength);
+        }
+
+        req.IsKeepAlive = ComputeKeepAlive(req.Version, ref req.Headers);
+
+        reader = parser; // commit — advance original reader on success
+        return HttpParseResult.Success;
+    }
+
+    internal static HttpParseResult TryParseHeaders(
+        ref SequenceReader<byte> reader,
+        HttpRequest req,
+        int? maxRequestTargetSize = null,
+        int maxRequestHeadersSize = 8 * 1024)
+    {
+        var parser = reader;
+        var result = TryParseHeadersCore(ref parser, req, maxRequestTargetSize, maxRequestHeadersSize);
+        if (result == HttpParseResult.Success)
+        {
+            reader = parser;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Parses the headers of an HTTP request from the given sequence of bytes, updating the provided
+    /// <paramref name="req"/> instance with the parsed data. Allocates and reuses buffers as needed
+    /// to store the parsed request line and headers.
+    /// </summary>
+    /// <param name="parser">A <see cref="SequenceReader{T}"/> instance that tracks the position within the byte sequence being parsed.</param>
+    /// <param name="req">The <see cref="HttpRequest"/> object to populate with parsed values.</param>
+    /// <param name="maxRequestTargetSize">An optional maximum allowable size (in bytes) for the request target (e.g., path and query).</param>
+    /// <param name="maxRequestHeadersSize">The maximum allowable combined size (in bytes) for all headers.</param>
+    /// <returns>
+    /// A value from the <see cref="HttpParseResult"/> enumeration indicating the success or failure
+    /// of the parsing operation, including specific error conditions.
+    /// </returns>
+    private static HttpParseResult TryParseHeadersCore(
+        ref SequenceReader<byte> parser,
+        HttpRequest req,
+        int? maxRequestTargetSize,
+        int maxRequestHeadersSize)
+    {
         // Request line — fast exit before any allocation if incomplete.
         if (!parser.TryReadTo(out ReadOnlySequence<byte> requestLine, "\r\n"u8))
         {
@@ -54,7 +124,7 @@ internal static class HttpParser
             {
                 ArrayPool<byte>.Shared.Return(req.Buffer);
             }
-            
+
             req.Buffer = ArrayPool<byte>.Shared.Rent(bufSize);
         }
 
@@ -103,34 +173,7 @@ internal static class HttpParser
         }
 
         req.HasChunkedTransferEncoding = HasChunkedTransferEncoding(ref req.Headers);
-
-        // Body
-        if (req is { HasChunkedTransferEncoding: false, HasContentLength: true, HasInvalidContentLength: false, ContentLength: > 0 })
-        {
-            if (parser.Remaining < req.ContentLength)
-            {
-                return HttpParseResult.Incomplete;
-            }
-
-            // Reuse existing body buffer if large enough.
-            if (req.BodyBuffer is null || req.BodyBuffer.Length < (int)req.ContentLength)
-            {
-                if (req.BodyBuffer is not null)
-                {
-                    ArrayPool<byte>.Shared.Return(req.BodyBuffer);
-                }
-                
-                req.BodyBuffer = ArrayPool<byte>.Shared.Rent((int)req.ContentLength);
-            }
-
-            parser.TryCopyTo(req.BodyBuffer.AsSpan(0, (int)req.ContentLength));
-            parser.Advance(req.ContentLength);
-            req.Body = req.BodyBuffer.AsMemory(0, (int)req.ContentLength);
-        }
-
         req.IsKeepAlive = ComputeKeepAlive(req.Version, ref req.Headers);
-
-        reader = parser; // commit — advance original reader on success
         return HttpParseResult.Success;
     }
 
@@ -196,10 +239,19 @@ internal static class HttpParser
 
         request.ContentLength = parsed;
         request.HasParsedContentLength = true;
+        
         return HttpParseResult.Success;
-
     }
 
+    /// <summary>
+    /// Attempts to parse the provided <paramref name="value"/> as a Content-Length header value,
+    /// validating that it represents a valid, non-negative long integer encoded in UTF-8.
+    /// </summary>
+    /// <param name="value">The span of bytes representing the Content-Length value in UTF-8 encoding.</param>
+    /// <param name="parsed">When this method returns, contains the parsed Content-Length value if the parse was successful. Otherwise, contains 0.</param>
+    /// <returns>
+    /// <c>true</c> if the parse operation was successful, the entire span was consumed, and the value represents a valid non-negative number; otherwise, <c>false</c>.
+    /// </returns>
     private static bool TryParseContentLengthValue(ReadOnlySpan<byte> value, out long parsed)
     {
         var ok = Utf8Parser.TryParse(value, out parsed, out var consumed) &&

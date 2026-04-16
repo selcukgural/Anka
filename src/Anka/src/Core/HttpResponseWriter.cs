@@ -28,6 +28,7 @@ public sealed class HttpResponseWriter : IDisposable
     private readonly Socket _socket;
     private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
     private bool _suppressResponseBody;
+    private static readonly byte[] Continue100Response = "HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray();
 
     /// <summary>
     /// Connection-scoped buffer reused across keep-alive responses. Rented once in the
@@ -49,7 +50,24 @@ public sealed class HttpResponseWriter : IDisposable
         _buf            = ArrayPool<byte>.Shared.Rent(DefaultBufSize);
     }
 
+    /// <summary>
+    /// Configures whether the HTTP response body should be suppressed.
+    /// </summary>
+    /// <param name="suppressResponseBody">
+    /// A boolean value indicating whether to suppress the response body.
+    /// Pass <c>true</c> to prevent the body from being written, or <c>false</c> to allow it.
+    /// </param>
     internal void SetSuppressResponseBody(bool suppressResponseBody) => _suppressResponseBody = suppressResponseBody;
+
+    /// <summary>
+    /// Sends an HTTP/1.1 "100 Continue" response to indicate that the client should proceed with the request.
+    /// </summary>
+    /// <param name="cancellationToken">A token that can be used to cancel the operation.</param>
+    /// <returns>A <see cref="ValueTask"/> that represents the asynchronous operation of sending the response.</returns>
+    internal ValueTask WriteContinueAsync(CancellationToken cancellationToken = default)
+    {
+        return SendBody(Continue100Response, cancellationToken);
+    }
 
     /// <summary>
     /// Releases resources used by the internal connection-scoped buffer

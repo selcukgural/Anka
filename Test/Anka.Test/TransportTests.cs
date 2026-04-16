@@ -96,11 +96,11 @@ public class TransportTests
     }
 
     [Fact]
-    public async Task ChunkedTransferEncoding_IsRejectedWithNotImplemented()
+    public async Task ChunkedTransferEncoding_IsDecodedAndEchoedBack()
     {
         await using var server = await TestServer.StartAsync(
-            static (_, response, cancellationToken) =>
-                response.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: cancellationToken));
+            static (request, response, cancellationToken) =>
+                response.WriteAsync(200, request.Body, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken));
 
         using var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, server.Port);
@@ -119,7 +119,90 @@ public class TransportTests
 
         var response = await reader.ReadResponseAsync(timeout.Token);
 
-        Assert.Contains("HTTP/1.1 501 Not Implemented", response);
+        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.Contains("Content-Length: 5", response);
+        Assert.EndsWith("hello", response, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Expect100Continue_SendsInterimResponseBeforeReadingBody()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (request, response, cancellationToken) =>
+                response.WriteAsync(200, request.Body, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        const string headers =
+            "POST /echo HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Expect: 100-continue\r\n" +
+            "Content-Length: 5\r\n" +
+            "Connection: close\r\n\r\n";
+
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(headers), timeout.Token);
+
+        var interim = await reader.ReadHeadersOnlyAsync(timeout.Token);
+        Assert.Contains("HTTP/1.1 100 Continue", interim);
+
+        await stream.WriteAsync("hello"u8.ToArray(), timeout.Token);
+
+        var response = await reader.ReadResponseAsync(timeout.Token);
+        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.EndsWith("hello", response, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadTimeout_ClosesStalledConnection()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, response, cancellationToken) =>
+                response.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: cancellationToken),
+            options: new ServerOptions { ReadTimeout = TimeSpan.FromMilliseconds(150) });
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await stream.WriteAsync("GET / HTTP/1.1\r\nHost: example.com\r\n"u8.ToArray(), timeout.Token);
+        await Task.Delay(400, timeout.Token);
+
+        var buffer = new byte[1];
+        var readException = await Record.ExceptionAsync(async () => await stream.ReadAsync(buffer, timeout.Token));
+        if (readException is null)
+        {
+            return;
+        }
+
+        Assert.True(readException is IOException or SocketException || readException.InnerException is SocketException);
+    }
+
+    [Fact]
+    public async Task ReadTimeout_AllowsTimelyFragmentedRequest()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, response, cancellationToken) =>
+                response.WriteAsync(200, OkBody, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken),
+            options: new ServerOptions { ReadTimeout = TimeSpan.FromSeconds(1) });
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        await stream.WriteAsync("GET / HTTP/1.1\r\nHo"u8.ToArray(), timeout.Token);
+        await Task.Delay(100, timeout.Token);
+        await stream.WriteAsync("st: example.com\r\nConnection: close\r\n\r\n"u8.ToArray(), timeout.Token);
+
+        var response = await reader.ReadResponseAsync(timeout.Token);
+
+        Assert.Contains("HTTP/1.1 200 OK", response);
         Assert.Contains("Connection: close", response);
     }
 
@@ -143,11 +226,11 @@ public class TransportTests
     }
 
     [Fact]
-    public async Task OversizedRequestBody_ClosesConnectionWithoutResponse()
+    public async Task OversizedRequestBody_LargerThanReceiveBuffer_IsHandled()
     {
         await using var server = await TestServer.StartAsync(
             static (_, response, cancellationToken) =>
-                response.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: cancellationToken));
+                response.WriteAsync(200, OkBody, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken));
 
         using var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, server.Port);
@@ -165,7 +248,10 @@ public class TransportTests
 
         await stream.WriteAsync(Encoding.ASCII.GetBytes(request), timeout.Token);
 
-        await Assert.ThrowsAnyAsync<Exception>(() => reader.ReadResponseAsync(timeout.Token));
+        var response = await reader.ReadResponseAsync(timeout.Token);
+
+        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.Contains("Content-Length: 2", response);
     }
 
     [Fact]
@@ -241,12 +327,12 @@ public class TransportTests
 
         public int Port { get; }
 
-        public static async Task<TestServer> StartAsync(RequestHandler handler)
+        public static async Task<TestServer> StartAsync(RequestHandler handler, ServerOptions? options = null)
         {
             var port  = GetFreePort();
             var cts   = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var server = new Server(handler, port);
+            var server = new Server(handler, port, options: options);
 
             server.ListeningStarted += _ => ready.TrySetResult();
 

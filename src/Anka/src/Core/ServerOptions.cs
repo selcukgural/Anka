@@ -12,6 +12,7 @@ public sealed class ServerOptions
     private int? _maxRequestBodySize;
     private int? _maxRequestTargetSize;
     private int _maxRequestHeadersSize = 8 * 1024;
+    private TimeSpan? _readTimeout;
 
     /// <summary>
     /// The minimum number of worker and I/O-completion threads that
@@ -65,8 +66,8 @@ public sealed class ServerOptions
     /// <para>
     /// When set to a non-<see langword="null"/> value, requests with a body size
     /// exceeding the specified limit will receive a 413 (Payload Too Large) response,
-    /// and the connection will be closed. This property does not apply to requests
-    /// that use chunked transfer encoding, which are rejected with a 501 (Not Implemented) response.
+    /// and the connection will be closed. Chunked request bodies are measured against
+    /// this limit using their decoded body length.
     /// </para>
     /// <para>
     /// A <see langword="null"/> value (the default) imposes no limit on the size of the request body.
@@ -138,6 +139,29 @@ public sealed class ServerOptions
             }
 
             _maxRequestHeadersSize = value;
+        }
+    }
+
+    /// <summary>
+    /// Specifies the maximum amount of idle time allowed while waiting for the next
+    /// read from a client connection.
+    /// <para>
+    /// When set, connections that stop making forward progress during request reads
+    /// are closed. This helps mitigate Slowloris-style attacks without changing the
+    /// handler API surface.
+    /// </para>
+    /// </summary>
+    public TimeSpan? ReadTimeout
+    {
+        get => _readTimeout;
+        set
+        {
+            if (value < TimeSpan.Zero)
+            {
+                throw new AnkaOutOfRangeException(nameof(ReadTimeout), "Value must be non-negative.");
+            }
+
+            _readTimeout = value;
         }
     }
 }
