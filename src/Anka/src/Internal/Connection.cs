@@ -99,6 +99,7 @@ internal sealed class Connection
                         end - parseOffset,
                         request,
                         _serverOptions.MaxRequestTargetSize,
+                        _serverOptions.MaxRequestHeadersSize,
                         out var bytesConsumed);
 
                     if (parseResult == HttpParseResult.Incomplete)
@@ -115,6 +116,18 @@ internal sealed class Connection
                     if (parseResult == HttpParseResult.RequestTargetTooLong)
                     {
                         await writer.WriteAsync(414, keepAlive: false, cancellationToken: _cancellationToken);
+                        return;
+                    }
+
+                    if (parseResult == HttpParseResult.HeaderFieldsTooLarge)
+                    {
+                        await writer.WriteAsync(431, keepAlive: false, cancellationToken: _cancellationToken);
+                        return;
+                    }
+
+                    if (parseResult == HttpParseResult.HttpVersionNotSupported)
+                    {
+                        await writer.WriteAsync(505, keepAlive: false, cancellationToken: _cancellationToken);
                         return;
                     }
 
@@ -204,17 +217,25 @@ internal sealed class Connection
     /// <param name="length">The number of bytes available for parsing starting from the offset.</param>
     /// <param name="request">An instance of <see cref="HttpRequest"/> where the parsed HTTP request data will be populated.</param>
     /// <param name="maxRequestTargetSize">The maximum allowed size of the request target. If null, no limit is applied.</param>
+    /// <param name="maxRequestHeadersSize">The maximum allowed aggregate size, in bytes, for request headers.</param>
     /// <param name="consumed">The number of bytes consumed during parsing, set to 0 on failure.</param>
     /// <returns>
     /// A <see cref="HttpParseResult"/> value indicating the result of the parsing operation.
     /// Possible values are <see cref="HttpParseResult.Success"/>, <see cref="HttpParseResult.Incomplete"/>,
     /// <see cref="HttpParseResult.Invalid"/>, or <see cref="HttpParseResult.RequestTargetTooLong"/>.
     /// </returns>
-    private static HttpParseResult TryParseNext(byte[] buf, int offset, int length, HttpRequest request, int? maxRequestTargetSize, out int consumed)
+    private static HttpParseResult TryParseNext(
+        byte[] buf,
+        int offset,
+        int length,
+        HttpRequest request,
+        int? maxRequestTargetSize,
+        int maxRequestHeadersSize,
+        out int consumed)
     {
         var seq = new ReadOnlySequence<byte>(buf, offset, length);
         var reader = new SequenceReader<byte>(seq);
-        var result = HttpParser.TryParse(ref reader, request, maxRequestTargetSize);
+        var result = HttpParser.TryParse(ref reader, request, maxRequestTargetSize, maxRequestHeadersSize);
 
         if (result == HttpParseResult.Success)
         {

@@ -11,6 +11,7 @@ public sealed class ServerOptions
 {
     private int? _maxRequestBodySize;
     private int? _maxRequestTargetSize;
+    private int _maxRequestHeadersSize = 8 * 1024;
 
     /// <summary>
     /// The minimum number of worker and I/O-completion threads that
@@ -114,6 +115,29 @@ public sealed class ServerOptions
             }
             
             _maxRequestTargetSize = value;
+        }
+    }
+
+    /// <summary>
+    /// Specifies the maximum allowed total size, in bytes, for request header
+    /// names and values stored by the parser.
+    /// <para>
+    /// Requests whose headers exceed this limit, or that exceed the built-in
+    /// header-count limit, will receive a 431 (Request Header Fields Too Large)
+    /// response, and the connection will be closed.
+    /// </para>
+    /// </summary>
+    public int MaxRequestHeadersSize
+    {
+        get => _maxRequestHeadersSize;
+        set
+        {
+            if (value < 0)
+            {
+                throw new AnkaOutOfRangeException(nameof(MaxRequestHeadersSize), "Value must be non-negative.");
+            }
+
+            _maxRequestHeadersSize = value;
         }
     }
 }

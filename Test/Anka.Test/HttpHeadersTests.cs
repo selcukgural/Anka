@@ -89,18 +89,30 @@ public class HttpHeadersTests
     public void Add_ExceedingMaxEntries_ExtraEntriesDropped()
     {
         var headers = CreateHeaders(bufSize: 65536);
+        var added = true;
 
         for (var i = 0; i < 70; i++)
         {
             var name = $"X-Header-{i:D3}";
-            headers.Add(System.Text.Encoding.ASCII.GetBytes(name), "value"u8);
+            added = headers.Add(System.Text.Encoding.ASCII.GetBytes(name), "value"u8);
         }
 
         // Only first 64 should be stored
+        Assert.False(added);
         Assert.Equal(64, headers.Count);
 
         // Entry 65 should not exist
         Assert.False(headers.TryGetValue("X-Header-064"u8, out _));
+    }
+
+    [Fact]
+    public void Add_ExceedingBufferCapacity_ReturnsFalse()
+    {
+        var headers = CreateHeaders(bufSize: 8);
+        var added = headers.Add("Host"u8, "example.com"u8);
+
+        Assert.False(added);
+        Assert.Equal(0, headers.Count);
     }
 
     [Fact]

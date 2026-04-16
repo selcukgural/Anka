@@ -1,5 +1,12 @@
 namespace Anka;
 
+internal enum HttpVersionParseResult
+{
+    Success = 0,
+    Unsupported = 1,
+    Invalid = 2
+}
+
 /// <summary>
 /// Provides parsing functionality for HTTP version strings present in HTTP request lines.
 /// </summary>
@@ -13,11 +20,42 @@ internal static class HttpVersionParser
     /// </returns>
     public static HttpVersion Parse(ReadOnlySpan<byte> span)
     {
+        return TryParse(span, out var version) == HttpVersionParseResult.Success
+            ? version
+            : HttpVersion.Unknown;
+    }
+
+    public static HttpVersionParseResult TryParse(ReadOnlySpan<byte> span, out HttpVersion version)
+    {
         if (span.SequenceEqual("HTTP/1.1"u8))
         {
-            return HttpVersion.Http11;
+            version = HttpVersion.Http11;
+            return HttpVersionParseResult.Success;
         }
-        
-        return span.SequenceEqual("HTTP/1.0"u8) ? HttpVersion.Http10 : HttpVersion.Unknown;
+
+        if (span.SequenceEqual("HTTP/1.0"u8))
+        {
+            version = HttpVersion.Http10;
+            return HttpVersionParseResult.Success;
+        }
+
+        version = HttpVersion.Unknown;
+
+        return IsWellFormedHttpVersion(span)
+            ? HttpVersionParseResult.Unsupported
+            : HttpVersionParseResult.Invalid;
+    }
+
+    private static bool IsWellFormedHttpVersion(ReadOnlySpan<byte> span)
+    {
+        return span.Length == 8 &&
+               span[0] == 'H' &&
+               span[1] == 'T' &&
+               span[2] == 'T' &&
+               span[3] == 'P' &&
+               span[4] == '/' &&
+               (uint)(span[5] - '0') <= 9 &&
+               span[6] == '.' &&
+               (uint)(span[7] - '0') <= 9;
     }
 }

@@ -96,6 +96,7 @@ public struct HttpHeaders
     /// The value represents the next available byte offset for writing data.
     /// </summary>
     private int       _writePos;
+    private int       _limit;
 
     /// <summary>
     /// Represents an internal array used to store header entries in the <see cref="HttpHeaders"/> struct.
@@ -107,29 +108,33 @@ public struct HttpHeaders
     /// <param name="sharedBuffer">The shared buffer to store the header data.</param>
     /// <param name="startOffset">The starting position within the buffer for writing header data.</param>
     internal void InitBuffer(byte[] sharedBuffer, int startOffset)
+        => InitBuffer(sharedBuffer, startOffset, sharedBuffer.Length - startOffset);
+
+    internal void InitBuffer(byte[] sharedBuffer, int startOffset, int maxBytes)
     {
         _buf      = sharedBuffer;
         _writePos = startOffset;
+        _limit    = Math.Min(sharedBuffer.Length, startOffset + maxBytes);
         _count    = 0;
     }
 
     /// <summary>
     /// Adds a header to the collection, storing the name in lowercase and the value verbatim.
-    /// If the maximum number of entries or buffer capacity is exceeded, the operation is ignored.
     /// </summary>
     /// <param name="name">The header name to add. Must be in lowercase or convertible to lowercase ASCII.</param>
     /// <param name="value">The header value to associate with the name.</param>
-    internal void Add(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
+    /// <returns><see langword="true"/> when the header was stored; otherwise, <see langword="false"/>.</returns>
+    internal bool Add(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
     {
         if (_count >= MaxEntries)
         {
-            return;
+            return false;
         }
 
         var needed = name.Length + value.Length;
-        if (_writePos + needed > _buf.Length)
+        if (_writePos + needed > _limit)
         {
-            return;
+            return false;
         }
 
         // Store name in lowercase
@@ -145,6 +150,8 @@ public struct HttpHeaders
         _entries[_count++] = new HeaderEntry(
             nameOffset,  (ushort)name.Length,
             valueOffset, (ushort)value.Length);
+
+        return true;
     }
 
     /// <summary>

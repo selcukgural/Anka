@@ -115,6 +115,7 @@ var options = new ServerOptions
 {
     MaxRequestBodySize = 1 * 1024 * 1024, // 1 MB
     MaxRequestTargetSize = 8 * 1024,      // 8 KB
+    MaxRequestHeadersSize = 8 * 1024,     // 8 KB
     DefaultResponseHeaders =
     [
         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
@@ -285,7 +286,21 @@ var server = new Server(handler, port: 8080, options: options);
 var options = new ServerOptions
 {
     MaxRequestBodySize = 512 * 1024,
-    MaxRequestTargetSize = 8 * 1024
+    MaxRequestTargetSize = 8 * 1024,
+    MaxRequestHeadersSize = 8 * 1024
+};
+
+var server = new Server(handler, port: 8080, options: options);
+```
+
+### Enforcing a Request Header Size Limit
+
+```csharp
+// Requests whose header fields exceed 8 KB, or exceed the built-in
+// header-count cap, automatically receive 431 Request Header Fields Too Large.
+var options = new ServerOptions
+{
+    MaxRequestHeadersSize = 8 * 1024
 };
 
 var server = new Server(handler, port: 8080, options: options);
@@ -527,7 +542,7 @@ Derives from `ArgumentException`. Thrown when an invalid argument is provided (e
 
 ### `AnkaOutOfRangeException`
 
-Derives from `ArgumentOutOfRangeException`. Thrown when a numeric argument is outside its valid range — port outside 1–65535, or `ServerOptions.MaxRequestBodySize` / `ServerOptions.MaxRequestTargetSize` set to a negative value.
+Derives from `ArgumentOutOfRangeException`. Thrown when a numeric argument is outside its valid range — port outside 1–65535, or `ServerOptions.MaxRequestBodySize` / `ServerOptions.MaxRequestTargetSize` / `ServerOptions.MaxRequestHeadersSize` set to a negative value.
 
 ---
 
@@ -548,6 +563,7 @@ Optional configuration passed to the `Server` constructor. All properties are op
 | `DefaultResponseHeaders`  | `IReadOnlyList<HttpHeader>`  | `[]`                             | Headers appended to every response (e.g., security headers). Allocated once at startup — zero per-request cost. |
 | `MaxRequestBodySize`      | `int?`                       | `null` (unlimited)               | Maximum allowed request body in bytes. Requests that exceed this limit automatically receive `413 Payload Too Large`. |
 | `MaxRequestTargetSize`    | `int?`                       | `null` (unlimited)               | Maximum allowed request-target size in bytes. Requests that exceed this limit automatically receive `414 URI Too Long`. |
+| `MaxRequestHeadersSize`   | `int`                        | `8192`                           | Maximum allowed aggregate size of request header names and values. Requests that exceed this limit, or the built-in header-count cap, automatically receive `431 Request Header Fields Too Large`. |
 
 **Example:**
 
@@ -557,6 +573,7 @@ var options = new ServerOptions
     AcceptorCount        = 4,
     MaxRequestBodySize   = 1 * 1024 * 1024,  // 1 MB
     MaxRequestTargetSize = 8 * 1024,         // 8 KB
+    MaxRequestHeadersSize = 8 * 1024,        // 8 KB
     DefaultResponseHeaders =
     [
         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),

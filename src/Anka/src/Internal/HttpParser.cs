@@ -25,7 +25,11 @@ internal static class HttpParser
     /// reusing the supplied <paramref name="req"/> instance and its existing buffer
     /// when possible to avoid per-request allocations.
     /// </summary>
-    public static HttpParseResult TryParse(ref SequenceReader<byte> reader, HttpRequest req, int? maxRequestTargetSize = null)
+    public static HttpParseResult TryParse(
+        ref SequenceReader<byte> reader,
+        HttpRequest req,
+        int? maxRequestTargetSize = null,
+        int maxRequestHeadersSize = 8 * 1024)
     {
         // Work on a copy so the original reader advances only on success.
         var parser = reader;
@@ -37,7 +41,9 @@ internal static class HttpParser
         }
 
         // Determine required buffer size for path + query + headers.
-        var bufSize = (int)Math.Min(parser.Remaining + requestLine.Length + 2L, 8192L);
+        var reservedTargetBytes = maxRequestTargetSize ?? (int)Math.Min(requestLine.Length, ushort.MaxValue);
+        var bufSize = reservedTargetBytes + maxRequestHeadersSize;
+        bufSize = Math.Min(bufSize, ushort.MaxValue);
         bufSize = Math.Max(bufSize, 256);
 
         // Reuse the existing buffer if large enough; otherwise rent a new one.
@@ -60,7 +66,7 @@ internal static class HttpParser
             return requestLineResult;
         }
 
-        req.Headers.InitBuffer(buf, writePos);
+        req.Headers.InitBuffer(buf, writePos, maxRequestHeadersSize);
 
         // Single pass over headers — extracts Content-Length inline.
         long contentLength = 0;
@@ -82,7 +88,10 @@ internal static class HttpParser
                 TryExtractContentLength(headerLine, ref contentLength);
             }
 
-            ParseHeaderLine(headerLine, ref req.Headers);
+            if (!ParseHeaderLine(headerLine, ref req.Headers))
+            {
+                return HttpParseResult.HeaderFieldsTooLarge;
+            }
         }
 
         req.HasChunkedTransferEncoding = HasChunkedTransferEncoding(ref req.Headers);
@@ -217,12 +226,26 @@ internal static class HttpParser
             var rawPath = rest[..s2];
             var versionSpan = rest[(s2 + 1)..].TrimEnd((byte)'\r');
 
-            if (maxRequestTargetSize is { } limit && rawPath.Length > limit || rawPath.Length > ushort.MaxValue)
+            if ((maxRequestTargetSize is { } limit && rawPath.Length > limit) || rawPath.Length > ushort.MaxValue)
             {
                 return HttpParseResult.RequestTargetTooLong;
             }
 
-            req.Version = HttpVersionParser.Parse(versionSpan);
+            if (req.Method == HttpMethod.Unknown)
+            {
+                return HttpParseResult.Invalid;
+            }
+
+            var versionResult = HttpVersionParser.TryParse(versionSpan, out var version);
+            switch (versionResult)
+            {
+                case HttpVersionParseResult.Unsupported:
+                    return HttpParseResult.HttpVersionNotSupported;
+                case HttpVersionParseResult.Invalid:
+                    return HttpParseResult.Invalid;
+            }
+
+            req.Version = version;
 
             // Split path / query
             var q = rawPath.IndexOf((byte)'?');
@@ -250,9 +273,7 @@ internal static class HttpParser
 
             req.SetQuery(queryOffset, (ushort)queryPart.Length);
 
-            return req.Method != HttpMethod.Unknown && req.Version != HttpVersion.Unknown
-                ? HttpParseResult.Success
-                : HttpParseResult.Invalid;
+            return HttpParseResult.Success;
         }
         finally
         {
@@ -269,12 +290,11 @@ internal static class HttpParser
     /// </summary>
     /// <param name="seq">The sequence of bytes representing the header line to parse.</param>
     /// <param name="headers">The collection of HTTP headers to which the parsed header will be added.</param>
-    private static void ParseHeaderLine(ReadOnlySequence<byte> seq, ref HttpHeaders headers)
+    private static bool ParseHeaderLine(ReadOnlySequence<byte> seq, ref HttpHeaders headers)
     {
         if (seq.IsSingleSegment)
         {
-            AddHeaderFromSpan(seq.FirstSpan, ref headers);
-            return;
+            return AddHeaderFromSpan(seq.FirstSpan, ref headers);
         }
 
         // Multi-segment line (rare): copy into a temp buffer, then parse.
@@ -283,7 +303,7 @@ internal static class HttpParser
         try
         {
             seq.CopyTo(tmp);
-            AddHeaderFromSpan(tmp.AsSpan(0, (int)seq.Length), ref headers);
+            return AddHeaderFromSpan(tmp.AsSpan(0, (int)seq.Length), ref headers);
         }
         finally
         {
@@ -296,18 +316,18 @@ internal static class HttpParser
     /// </summary>
     /// <param name="line">The span representing a line containing the header name and value separated by a colon.</param>
     /// <param name="headers">The reference to the header collection where the parsed name-value pair should be added.</param>
-    private static void AddHeaderFromSpan(ReadOnlySpan<byte> line, ref HttpHeaders headers)
+    private static bool AddHeaderFromSpan(ReadOnlySpan<byte> line, ref HttpHeaders headers)
     {
         var colon = line.IndexOf((byte)':');
         if (colon <= 0)
         {
-            return;
+            return true;
         }
 
         var name = line[..colon];
         var value = line[(colon + 1)..].Trim((byte)' ');
 
-        headers.Add(name, value);
+        return headers.Add(name, value);
     }
 
     /// <summary>

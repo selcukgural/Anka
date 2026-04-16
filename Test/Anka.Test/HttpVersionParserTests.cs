@@ -33,6 +33,18 @@ public class HttpVersionParserTests
     }
 
     [Theory]
+    [InlineData("HTTP/2.0")]
+    [InlineData("HTTP/1.2")]
+    public void TryParse_UnsupportedVersion_ReturnsUnsupported(string version)
+    {
+        var bytes = Encoding.ASCII.GetBytes(version);
+        var result = HttpVersionParser.TryParse(bytes, out var parsed);
+
+        Assert.Equal(HttpVersionParseResult.Unsupported, result);
+        Assert.Equal(HttpVersion.Unknown, parsed);
+    }
+
+    [Theory]
     [InlineData("http/1.1")]
     [InlineData("Http/1.0")]
     public void Parse_LowercaseVersion_ReturnsUnknown(string version)
@@ -46,5 +58,14 @@ public class HttpVersionParserTests
     public void Parse_ArbitraryString_ReturnsUnknown()
     {
         Assert.Equal(HttpVersion.Unknown, HttpVersionParser.Parse("foobar"u8));
+    }
+
+    [Fact]
+    public void TryParse_InvalidVersion_ReturnsInvalid()
+    {
+        var result = HttpVersionParser.TryParse("foobar"u8, out var parsed);
+
+        Assert.Equal(HttpVersionParseResult.Invalid, result);
+        Assert.Equal(HttpVersion.Unknown, parsed);
     }
 }

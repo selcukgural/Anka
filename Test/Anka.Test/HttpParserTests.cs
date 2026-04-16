@@ -19,13 +19,17 @@ public class HttpParserTests
         return HttpParser.TryParse(ref reader, request) == HttpParseResult.Success;
     }
 
-    private static HttpParseResult TryParseResult(string raw, HttpRequest request, int? maxRequestTargetSize = null)
+    private static HttpParseResult TryParseResult(
+        string raw,
+        HttpRequest request,
+        int? maxRequestTargetSize = null,
+        int maxRequestHeadersSize = 8 * 1024)
     {
         var bytes = Encoding.ASCII.GetBytes(raw);
         var seq   = new ReadOnlySequence<byte>(bytes);
         var reader = new SequenceReader<byte>(seq);
         request.ResetForReuse();
-        return HttpParser.TryParse(ref reader, request, maxRequestTargetSize);
+        return HttpParser.TryParse(ref reader, request, maxRequestTargetSize, maxRequestHeadersSize);
     }
 
     private static bool TryParse(string raw, out HttpRequest? request)
@@ -244,10 +248,19 @@ public class HttpParserTests
     }
 
     [Fact]
-    public void TryParse_UnknownVersion_ReturnsFalse()
+    public void TryParse_UnsupportedVersion_ReturnsHttpVersionNotSupported()
     {
         var req = CreateRequest();
         var result = TryParseResult("GET / HTTP/2.0\r\nHost: example.com\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.HttpVersionNotSupported, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_InvalidVersion_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("GET / http/1.1\r\nHost: example.com\r\n\r\n", req);
         Assert.Equal(HttpParseResult.Invalid, result);
         req.Dispose();
     }
@@ -279,6 +292,37 @@ public class HttpParserTests
         var req = CreateRequest();
         var result = TryParseResult(raw, req, maxRequestTargetSize: 8);
         Assert.Equal(HttpParseResult.RequestTargetTooLong, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_TooManyHeaders_ReturnsHeaderFieldsTooLarge()
+    {
+        var builder = new StringBuilder("GET / HTTP/1.1\r\n");
+        for (var i = 0; i < 65; i++)
+        {
+            builder.Append("X-Header-").Append(i.ToString("D2")).Append(": value\r\n");
+        }
+        builder.Append("\r\n");
+
+        var req = CreateRequest();
+        var result = TryParseResult(builder.ToString(), req);
+        Assert.Equal(HttpParseResult.HeaderFieldsTooLarge, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_HeaderBytesExceedConfiguredLimit_ReturnsHeaderFieldsTooLarge()
+    {
+        const string raw =
+            "GET / HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "X-Long: abcdefghijklmnopqrstuvwxyz\r\n" +
+            "\r\n";
+
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req, maxRequestHeadersSize: 16);
+        Assert.Equal(HttpParseResult.HeaderFieldsTooLarge, result);
         req.Dispose();
     }
 
