@@ -122,6 +122,26 @@ public sealed class HttpRequest
     internal bool HasChunkedTransferEncoding { get; set; }
 
     /// <summary>
+    /// Indicates that at least one Content-Length header was present.
+    /// </summary>
+    internal bool HasContentLength { get; set; }
+
+    /// <summary>
+    /// Indicates that a Content-Length header was present but could not be parsed as a non-negative integer.
+    /// </summary>
+    internal bool HasInvalidContentLength { get; set; }
+
+    /// <summary>
+    /// Parsed numeric Content-Length value from the request headers.
+    /// </summary>
+    internal long ContentLength { get; set; }
+
+    /// <summary>
+    /// Indicates that a valid numeric Content-Length has been parsed.
+    /// </summary>
+    internal bool HasParsedContentLength { get; set; }
+
+    /// <summary>
     /// Sets the path offset and length for the <see cref="HttpRequest"/> instance.
     /// This method updates the internal state to define the portion of the buffer
     /// representing the HTTP request path.
@@ -165,6 +185,10 @@ public sealed class HttpRequest
         Body         = default;
         IsKeepAlive  = false;
         HasChunkedTransferEncoding = false;
+        HasContentLength = false;
+        HasInvalidContentLength = false;
+        ContentLength = 0;
+        HasParsedContentLength = false;
         _pathStr     = null;
         _queryStr    = null;
         _pathOffset  = 0;

@@ -79,6 +79,31 @@ public class ContentLengthValidationTests
         Assert.Contains("Connection: close", response);
     }
 
+    [Fact]
+    public async Task Post_WithDuplicateContentLengthSameValue_Returns200()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+
+        var response = await SendRawAsync(server.Port,
+            "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello");
+
+        Assert.Contains("HTTP/1.1 200 OK", response);
+    }
+
+    [Fact]
+    public async Task Post_WithConflictingDuplicateContentLength_Returns400()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+
+        var response = await SendRawAsync(server.Port,
+            "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 7\r\nConnection: close\r\n\r\nhello!!");
+
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
+        Assert.Contains("Connection: close", response);
+    }
+
     // ── PUT ──────────────────────────────────────────────────────────────────
 
     [Fact]

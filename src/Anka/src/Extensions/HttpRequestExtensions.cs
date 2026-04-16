@@ -23,14 +23,8 @@ internal static class HttpRequestExtensions
         {
             return true;
         }
- 
-        // RFC 9110 §8.6
-        if (!request.Headers.TryGetValue(HttpHeaderNames.ContentLength, out var value))
-        {
-            return true;
-        }
- 
-        return int.TryParse(value, out var length) && length >= 0;
+
+        return !request.HasInvalidContentLength;
     }
 
     /// <summary>
@@ -55,10 +49,10 @@ internal static class HttpRequestExtensions
         {
             return true;
         }
-        
-        if (request.Headers.TryGetValue(HttpHeaderNames.ContentLength, out var value) && int.TryParse(value, out var length))
+
+        if (request is { HasContentLength: true, HasInvalidContentLength: false })
         {
-            return length <= maxRequestBodySize.Value;
+            return request.ContentLength <= maxRequestBodySize.Value;
         }
         
         return true;

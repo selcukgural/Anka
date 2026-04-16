@@ -211,6 +211,8 @@ var server = new Server(
     port: 8080);
 ```
 
+Conflicting duplicate `Content-Length` headers are rejected with `400 Bad Request`. Repeated identical numeric values are accepted.
+
 ### Simple Path-Based Routing
 
 ```csharp

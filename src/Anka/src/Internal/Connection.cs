@@ -107,28 +107,20 @@ internal sealed class Connection
                         break; // incomplete request — wait for more bytes
                     }
 
-                    if (parseResult == HttpParseResult.Invalid)
+                    switch (parseResult)
                     {
-                        await writer.WriteAsync(400, keepAlive: false, cancellationToken: _cancellationToken);
-                        return;
-                    }
-
-                    if (parseResult == HttpParseResult.RequestTargetTooLong)
-                    {
-                        await writer.WriteAsync(414, keepAlive: false, cancellationToken: _cancellationToken);
-                        return;
-                    }
-
-                    if (parseResult == HttpParseResult.HeaderFieldsTooLarge)
-                    {
-                        await writer.WriteAsync(431, keepAlive: false, cancellationToken: _cancellationToken);
-                        return;
-                    }
-
-                    if (parseResult == HttpParseResult.HttpVersionNotSupported)
-                    {
-                        await writer.WriteAsync(505, keepAlive: false, cancellationToken: _cancellationToken);
-                        return;
+                        case HttpParseResult.Invalid or HttpParseResult.ConflictingContentLength:
+                            await writer.WriteAsync(400, keepAlive: false, cancellationToken: _cancellationToken);
+                            return;
+                        case HttpParseResult.RequestTargetTooLong:
+                            await writer.WriteAsync(414, keepAlive: false, cancellationToken: _cancellationToken);
+                            return;
+                        case HttpParseResult.HeaderFieldsTooLarge:
+                            await writer.WriteAsync(431, keepAlive: false, cancellationToken: _cancellationToken);
+                            return;
+                        case HttpParseResult.HttpVersionNotSupported:
+                            await writer.WriteAsync(505, keepAlive: false, cancellationToken: _cancellationToken);
+                            return;
                     }
 
                     parseOffset += bytesConsumed;

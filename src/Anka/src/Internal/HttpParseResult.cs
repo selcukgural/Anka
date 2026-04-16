@@ -10,5 +10,6 @@ internal enum HttpParseResult
     Invalid = 2,
     RequestTargetTooLong = 3,
     HeaderFieldsTooLarge = 4,
-    HttpVersionNotSupported = 5
+    HttpVersionNotSupported = 5,
+    ConflictingContentLength = 6
 }

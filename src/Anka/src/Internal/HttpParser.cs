@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Text;
 
 namespace Anka;
 
@@ -68,9 +69,6 @@ internal static class HttpParser
 
         req.Headers.InitBuffer(buf, writePos, maxRequestHeadersSize);
 
-        // Single pass over headers — extracts Content-Length inline.
-        long contentLength = 0;
-
         while (true)
         {
             if (!parser.TryReadTo(out ReadOnlySequence<byte> headerLine, "\r\n"u8))
@@ -85,7 +83,11 @@ internal static class HttpParser
 
             if (headerLine.Length > 15 && (headerLine.FirstSpan[0] | 0x20) == (byte)'c')
             {
-                TryExtractContentLength(headerLine, ref contentLength);
+                var contentLengthResult = TrackContentLength(headerLine, req);
+                if (contentLengthResult != HttpParseResult.Success)
+                {
+                    return contentLengthResult;
+                }
             }
 
             if (!ParseHeaderLine(headerLine, ref req.Headers))
@@ -97,27 +99,27 @@ internal static class HttpParser
         req.HasChunkedTransferEncoding = HasChunkedTransferEncoding(ref req.Headers);
 
         // Body
-        if (!req.HasChunkedTransferEncoding && contentLength > 0)
+        if (req is { HasChunkedTransferEncoding: false, HasContentLength: true, HasInvalidContentLength: false, ContentLength: > 0 })
         {
-            if (parser.Remaining < contentLength)
+            if (parser.Remaining < req.ContentLength)
             {
                 return HttpParseResult.Incomplete;
             }
 
             // Reuse existing body buffer if large enough.
-            if (req.BodyBuffer is null || req.BodyBuffer.Length < (int)contentLength)
+            if (req.BodyBuffer is null || req.BodyBuffer.Length < (int)req.ContentLength)
             {
                 if (req.BodyBuffer is not null)
                 {
                     ArrayPool<byte>.Shared.Return(req.BodyBuffer);
                 }
                 
-                req.BodyBuffer = ArrayPool<byte>.Shared.Rent((int)contentLength);
+                req.BodyBuffer = ArrayPool<byte>.Shared.Rent((int)req.ContentLength);
             }
 
-            parser.TryCopyTo(req.BodyBuffer.AsSpan(0, (int)contentLength));
-            parser.Advance(contentLength);
-            req.Body = req.BodyBuffer.AsMemory(0, (int)contentLength);
+            parser.TryCopyTo(req.BodyBuffer.AsSpan(0, (int)req.ContentLength));
+            parser.Advance(req.ContentLength);
+            req.Body = req.BodyBuffer.AsMemory(0, (int)req.ContentLength);
         }
 
         req.IsKeepAlive = ComputeKeepAlive(req.Version, ref req.Headers);
@@ -127,15 +129,12 @@ internal static class HttpParser
     }
 
     /// <summary>
-    /// Attempts to extract the Content-Length value from the provided header line sequence
-    /// and update the given reference with the parsed content length.
+    /// Tracks Content-Length metadata from the provided header line sequence.
     /// </summary>
     /// <param name="line">A sequence of bytes representing the header line to be analyzed.</param>
-    /// <param name="contentLength">
-    /// A reference to the variable that will be updated with the numeric value of the Content-Length
-    /// if it is successfully parsed from the header line.
-    /// </param>
-    private static void TryExtractContentLength(ReadOnlySequence<byte> line, ref long contentLength)
+    /// <param name="request">The request receiving parsed Content-Length metadata.</param>
+    /// <returns>The parse result for the Content-Length line.</returns>
+    private static HttpParseResult TrackContentLength(ReadOnlySequence<byte> line, HttpRequest request)
     {
         const int nameLen = 14; // "content-length"
 
@@ -145,31 +144,70 @@ internal static class HttpParser
 
         if (!AsciiEqualsIgnoreCase(nameBuf, "content-length"u8))
         {
-            return;
+            return HttpParseResult.Success;
         }
 
-        // Skip ": "
-        long pos = nameLen;
-
-        while (pos < line.Length && GetByte(line, pos) is (byte)':' or (byte)' ')
+        request.HasContentLength = true;
+        var valueStart = nameLen;
+        while (valueStart < line.Length && GetByte(line, valueStart) is (byte)':' or (byte)' ')
         {
-            pos++;
+            valueStart++;
         }
 
-        long value = 0;
-
-        while (pos < line.Length)
+        long parsed;
+        if (line.IsSingleSegment)
         {
-            var digit = (uint)(GetByte(line, pos++) - '0');
-            if (digit > 9)
+            if (!TryParseContentLengthValue(line.FirstSpan[(int)valueStart..].Trim((byte)' '), out parsed))
             {
-                break;
+                request.HasInvalidContentLength = true;
+                return HttpParseResult.Success;
             }
-
-            value = value * 10 + digit;
+        }
+        else
+        {
+            var scratch = ArrayPool<byte>.Shared.Rent((int)(line.Length - valueStart));
+            try
+            {
+                line.Slice(valueStart).CopyTo(scratch);
+                if (!TryParseContentLengthValue(
+                        scratch.AsSpan(0, (int)(line.Length - valueStart)).Trim((byte)' '),
+                        out parsed))
+                {
+                    request.HasInvalidContentLength = true;
+                    return HttpParseResult.Success;
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(scratch);
+            }
         }
 
-        contentLength = value;
+        if (request.HasParsedContentLength)
+        {
+            return parsed == request.ContentLength ? HttpParseResult.Success : HttpParseResult.ConflictingContentLength;
+        }
+
+        request.ContentLength = parsed;
+        request.HasParsedContentLength = true;
+        return HttpParseResult.Success;
+
+    }
+
+    private static bool TryParseContentLengthValue(ReadOnlySpan<byte> value, out long parsed)
+    {
+        var ok = Utf8Parser.TryParse(value, out parsed, out var consumed) &&
+                 consumed == value.Length &&
+                 parsed >= 0;
+
+        if (ok)
+        {
+            return true;
+        }
+
+        parsed = 0;
+        return false;
+
     }
 
     /// <summary>

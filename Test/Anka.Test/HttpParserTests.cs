@@ -266,6 +266,39 @@ public class HttpParserTests
     }
 
     [Fact]
+    public void TryParse_DuplicateContentLengthWithSameValue_ReturnsSuccess()
+    {
+        const string raw =
+            "POST / HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Content-Length: 5\r\n" +
+            "Content-Length: 5\r\n" +
+            "\r\n" +
+            "hello";
+
+        Assert.True(TryParse(raw, out var req));
+        Assert.Equal("hello", Encoding.ASCII.GetString(req!.Body.Span));
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_DuplicateContentLengthWithConflictingValues_ReturnsConflict()
+    {
+        const string raw =
+            "POST / HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Content-Length: 5\r\n" +
+            "Content-Length: 7\r\n" +
+            "\r\n" +
+            "hello!!";
+
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req);
+        Assert.Equal(HttpParseResult.ConflictingContentLength, result);
+        req.Dispose();
+    }
+
+    [Fact]
     public void TryParse_BodyTruncated_ReturnsFalse()
     {
         // Content-Length says 10 but only 5 bytes of body present
