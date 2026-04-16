@@ -215,6 +215,8 @@ Conflicting duplicate `Content-Length` headers are rejected with `400 Bad Reques
 
 Responses to `HEAD` requests and `304 Not Modified` responses suppress payload bytes on the wire, while still emitting `Content-Length` for the supplied body length.
 
+`HTTP/1.1` requests must include a `Host` header. Requests that omit it are rejected with `400 Bad Request`.
+
 ### Simple Path-Based Routing
 
 ```csharp

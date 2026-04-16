@@ -303,7 +303,7 @@ public class HttpParserTests
     {
         // Content-Length says 10 but only 5 bytes of body present
         var req = CreateRequest();
-        var result = TryParseResult("POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nhello", req);
+        var result = TryParseResult("POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\n\r\nhello", req);
         Assert.Equal(HttpParseResult.Incomplete, result);
         req.Dispose();
     }
@@ -360,9 +360,19 @@ public class HttpParserTests
     }
 
     [Fact]
-    public void TryParse_RequestWithNoHeaders_ParsedSuccessfully()
+    public void TryParse_Http11WithoutHost_ReturnsMissingHostHeader()
     {
         const string raw = "GET / HTTP/1.1\r\n\r\n";
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req);
+        Assert.Equal(HttpParseResult.MissingHostHeader, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_Http10WithoutHost_ParsedSuccessfully()
+    {
+        const string raw = "GET / HTTP/1.0\r\n\r\n";
         Assert.True(TryParse(raw, out var req));
         Assert.NotNull(req);
         Assert.Equal(0, req!.Headers.Count);
@@ -386,6 +396,7 @@ public class HttpParserTests
         const string body = "hello";
         var raw =
             $"POST / HTTP/1.1\r\n" +
+            $"Host: example.com\r\n" +
             $"CONTENT-LENGTH: {body.Length}\r\n" +
             $"\r\n" +
             body;

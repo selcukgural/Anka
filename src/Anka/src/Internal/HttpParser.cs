@@ -96,6 +96,12 @@ internal static class HttpParser
             }
         }
 
+        if (req.Version == HttpVersion.Http11 &&
+            !req.Headers.TryGetValue(HttpHeaderNames.Host, out _))
+        {
+            return HttpParseResult.MissingHostHeader;
+        }
+
         req.HasChunkedTransferEncoding = HasChunkedTransferEncoding(ref req.Headers);
 
         // Body

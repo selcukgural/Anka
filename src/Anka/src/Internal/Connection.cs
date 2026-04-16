@@ -110,7 +110,7 @@ internal sealed class Connection
 
                     switch (parseResult)
                     {
-                        case HttpParseResult.Invalid or HttpParseResult.ConflictingContentLength:
+                        case HttpParseResult.Invalid or HttpParseResult.ConflictingContentLength or HttpParseResult.MissingHostHeader:
                             await writer.WriteAsync(400, keepAlive: false, cancellationToken: _cancellationToken);
                             return;
                         case HttpParseResult.RequestTargetTooLong:

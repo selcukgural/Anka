@@ -104,7 +104,7 @@ public class RequestBodySizeLimitTests
         var response = await SendRawAsync(server.Port,
             "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\nConnection: close\r\n\r\n" + new string('x', 100));
 
-        Assert.Contains("HTTP/1.1 413", response);
+        Assert.Contains("HTTP/1.1 413 Payload Too Large", response);
         Assert.Contains("Connection: close", response);
     }
 
@@ -121,7 +121,7 @@ public class RequestBodySizeLimitTests
         var response = await SendRawAsync(server.Port,
             "PUT /resource HTTP/1.1\r\nHost: example.com\r\nContent-Length: 50\r\nConnection: close\r\n\r\n" + new string('y', 50));
 
-        Assert.Contains("HTTP/1.1 413", response);
+        Assert.Contains("HTTP/1.1 413 Payload Too Large", response);
     }
 
     [Fact]
@@ -137,7 +137,7 @@ public class RequestBodySizeLimitTests
         var response = await SendRawAsync(server.Port,
             "PATCH /resource HTTP/1.1\r\nHost: example.com\r\nContent-Length: 20\r\nConnection: close\r\n\r\n" + new string('z', 20));
 
-        Assert.Contains("HTTP/1.1 413", response);
+        Assert.Contains("HTTP/1.1 413 Payload Too Large", response);
     }
 
     // ── Content-Length: 0 always passes ───────────────────────────────────

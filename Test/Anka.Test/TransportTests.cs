@@ -124,6 +124,25 @@ public class TransportTests
     }
 
     [Fact]
+    public async Task HandlerException_ReturnsInternalServerError()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, _, _) => throw new InvalidOperationException("boom"));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        await stream.WriteAsync("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"u8.ToArray(), timeout.Token);
+
+        var response = await reader.ReadResponseAsync(timeout.Token);
+
+        Assert.Contains("HTTP/1.1 500 Internal Server Error", response);
+    }
+
+    [Fact]
     public async Task OversizedRequestBody_ClosesConnectionWithoutResponse()
     {
         await using var server = await TestServer.StartAsync(

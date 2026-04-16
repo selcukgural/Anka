@@ -66,6 +66,39 @@ public class RequestHeaderAndVersionValidationTests
     }
 
     [Fact]
+    public async Task Get_Http11WithoutHost_Returns400()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+
+        const string request =
+            "GET / HTTP/1.1\r\n" +
+            "Connection: close\r\n" +
+            "\r\n";
+
+        var response = await SendRawAsync(server.Port, request);
+
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
+        Assert.Contains("Connection: close", response);
+    }
+
+    [Fact]
+    public async Task Get_Http10WithoutHost_Returns200()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+
+        const string request =
+            "GET / HTTP/1.0\r\n" +
+            "Connection: close\r\n" +
+            "\r\n";
+
+        var response = await SendRawAsync(server.Port, request);
+
+        Assert.Contains("HTTP/1.1 200 OK", response);
+    }
+
+    [Fact]
     public async Task Get_UnsupportedHttpVersion_Returns505()
     {
         await using var server = await TestServer.StartAsync(
