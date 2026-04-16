@@ -10,9 +10,17 @@
 
         <!-- NuGet package metadata -->
         <PackageId>Anka</PackageId>
-        <Version>0.0.1-beta.1</Version>
+        <Version>0.0.1-beta.2</Version>
         <Authors>Selçuk Güral</Authors>
         <Description>Minimal zero-allocation HTTP/1.x server for .NET 8+. Native AOT compatible. Built on raw sockets with a sliding receive window and pooled buffers for an allocation-free steady-state fast path.</Description>
+        <PackageReleaseNotes>Highlights in this release:
+- Added RFC-aligned request validation for Host, Content-Length, HTTP version, and request-target handling.
+- Added support for all HTTP/1.1 request-target forms: origin-form, absolute-form, authority-form (CONNECT), and asterisk-form (OPTIONS *).
+- Added Transfer-Encoding: chunked request body decoding, trailer parsing, and automatic Expect: 100-continue handling.
+- Added configurable request limits: MaxRequestBodySize (413), MaxRequestTargetSize (414), and MaxRequestHeadersSize (431).
+- Added malformed-version and unsupported-version handling with 400 Bad Request and 505 HTTP Version Not Supported responses.
+- Added correct payload suppression for HEAD and 304 Not Modified responses.
+- Expanded automated coverage with parser, transport, limit, and chunked-body tests.</PackageReleaseNotes>
         <PackageTags>http;server;aot;native-aot;zero-allocation;high-performance;minimal;networking;tcp;http1</PackageTags>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <Copyright>Copyright (c) 2026 Selçuk Güral</Copyright>
@@ -26,6 +34,7 @@
         <IncludeSymbols>true</IncludeSymbols>
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
         <IsPackable>true</IsPackable>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     </PropertyGroup>
 
     <ItemGroup>

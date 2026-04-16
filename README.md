@@ -25,12 +25,14 @@ Minimal HTTP/1.x server library for .NET 8+, built for **Native AOT** with a foc
 2. [Why Anka](#why-anka)
 3. [Quick Start](#quick-start)
 4. [Examples](#examples)
-5. [Architecture Overview](#architecture-overview)
-6. [Class Reference — Public API](#class-reference--public-api)
-7. [Class Reference — Internal](#class-reference--internal)
-8. [Memory Model](#memory-model)
-9. [Performance Profile](#performance-profile)
-10. [Project Structure](#project-structure)
+5. [RFC Compliance](#rfc-compliance)
+6. [Architecture Overview](#architecture-overview)
+7. [Class Reference — Public API](#class-reference--public-api)
+8. [Class Reference — Internal](#class-reference--internal)
+9. [Memory Model](#memory-model)
+10. [Performance Profile](#performance-profile)
+11. [Project Structure](#project-structure)
+12. [Test Coverage](#test-coverage)
 
 ---
 
@@ -319,7 +321,73 @@ var server = new Server(handler, port: 8080, options: options);
 
 ---
 
-## Architecture Overview
+## RFC Compliance
+
+Anka targets HTTP/1.x and implements the following behaviour from the core HTTP RFCs.
+
+### Supported (RFC 7230 — Message Syntax & Routing)
+
+| Feature | Behaviour | Reference |
+|---|---|---|
+| HTTP/1.0 and HTTP/1.1 | Both versions parsed and handled | §2.6 |
+| Request-target forms | Origin (`/path`), absolute (`http://host/path`), authority (`host:port` for CONNECT), asterisk (`*` for OPTIONS) | §5.3 |
+| Host header validation | Required for HTTP/1.1; missing / duplicate / mismatched Host → `400` | §5.4 |
+| Content-Length | Parsed and validated; conflicting duplicates → `400`; malformed values → `400` | §3.3.2 |
+| Transfer-Encoding: chunked | Chunk-size parsing (hex), chunk data + CRLF validation, trailer headers, body reassembly into `req.Body` | §4.1 |
+| Expect: 100-continue | Automatic `100 Continue` interim response before body read | §5.1.1 |
+| Connection management | HTTP/1.1 keep-alive by default; HTTP/1.0 close by default; `Connection: close` / `keep-alive` honoured | §6.1, §6.3 |
+| Header normalisation | Names lowercased on ingestion; repeated headers enumerable via `TryGetAllValues(...)` | §3.2.2 |
+| Message body suppression | HEAD responses and `304 Not Modified` suppress payload bytes while preserving representation headers; `1xx` / `204` omit body-describing headers | §3.3 |
+
+### Supported (RFC 7231 — Semantics & Content)
+
+| Feature | Behaviour | Reference |
+|---|---|---|
+| Methods | GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH | §4 |
+| Status codes | Full reason-phrase mapping for common codes (200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 405, 413, 414, 431, 500, 501, 503, 505) | §6 |
+
+### Supported (RFC 3986 — URI Syntax)
+
+| Feature | Behaviour | Reference |
+|---|---|---|
+| Absolute-form parsing | Scheme detection (http/https), authority extraction, path + query split | §3 |
+| Authority validation | IPv6 literals (`[::1]`), IPv4 addresses, domain reg-names, port range 0–65535 | §3.2 |
+| Host ↔ absolute-form consistency | Host header must match the authority in an absolute-form request-target | §5.4 (7230) |
+
+### Error Responses
+
+Anka returns the following automatic error responses before the user handler runs:
+
+| Status | Condition | Behaviour |
+|---|---|---|
+| `100 Continue` | `Expect: 100-continue` header present | Sent before reading the request body |
+| `400 Bad Request` | Malformed request line, unrecognised method, invalid headers, conflicting `Content-Length`, missing/invalid `Host`, malformed HTTP version token | Connection closed |
+| `413 Payload Too Large` | Body exceeds `ServerOptions.MaxRequestBodySize` | Connection closed |
+| `414 URI Too Long` | Request-target exceeds `ServerOptions.MaxRequestTargetSize` | Connection closed |
+| `431 Request Header Fields Too Large` | Headers exceed `ServerOptions.MaxRequestHeadersSize` (default 8 KB) or header count > 64 | Connection closed |
+| `505 HTTP Version Not Supported` | Well-formed but unsupported version (e.g. `HTTP/2.0`) | Connection closed |
+
+### Configurable Limits
+
+| Limit | Default | ServerOptions Property | Over-limit Response |
+|---|---|---|---|
+| Request body size | Unlimited | `MaxRequestBodySize` | `413` |
+| Request-target size | Unlimited | `MaxRequestTargetSize` | `414` |
+| Header aggregate size | 8 KB | `MaxRequestHeadersSize` | `431` |
+| Header count | 64 | — (hard limit) | `431` |
+| Idle read timeout | None | `ReadTimeout` | Connection closed silently |
+
+### Not Supported / Out of Scope
+
+| Feature | Status |
+|---|---|
+| HTTP/2, HTTP/3 | Not planned — HTTP/1.x only |
+| TLS / HTTPS | Not built-in — terminate TLS at a reverse proxy |
+| WebSocket upgrade | Not implemented |
+| Content-Encoding (gzip, deflate, br) | Not built-in — decompress in user code |
+| Chunked *response* encoding | Not implemented — all responses carry `Content-Length` |
+| Trailer headers in *responses* | Not implemented |
+| HTTP/0.9 | Rejected |
 
 ```
                         ┌──────────────────────────────────────────┐
@@ -347,10 +415,12 @@ var server = new Server(handler, port: 8080, options: options);
 ```
 TCP bytes → SocketReceiver.ReceiveAsync()
          → pooled receive buffer + sliding window
-         → HttpParser.TryParse()
+         → HttpParser.TryParse()              (request line + headers)
+         → 100 Continue (if Expect header)
+         → Content-Length body read  OR  ChunkedBodyParser (Transfer-Encoding: chunked)
          → HttpRequest (rented once per connection, reused per request)
          → handler(request, response)
-         → HttpResponseWriter.WriteAsync()
+         → HttpResponseWriter.WriteAsync()    (body suppressed for HEAD / 304)
          → Socket.SendAsync()
 ```
 
@@ -466,7 +536,7 @@ ValueTask WriteAsync(
 > **Fluent API:** Use `response.AddHeader(name, value).WriteAsync(...)` to attach extra headers without building an array. See `HttpResponseWriterExtensions`.
 
 **Supported Status Code Reason Phrases:**
-200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 414 URI Too Long · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · others → "Unknown"
+100 Continue · 200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 414 URI Too Long · 431 Request Header Fields Too Large · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · 505 HTTP Version Not Supported · others → "Unknown"
 
 ---
 
@@ -479,11 +549,12 @@ Access:    public struct
 
 Header collection without heap allocation. 64 header entries are embedded in the struct via `[InlineArray(64)]`.
 
-| Member                                                    | Description                                                       |
-|-----------------------------------------------------------|-------------------------------------------------------------------|
-| `Count`                                                   | Number of headers added                                           |
-| `TryGetValue(ReadOnlySpan<byte>, out ReadOnlySpan<byte>)` | Zero-alloc lookup. `lowercaseName` **must already be lowercase**. |
-| `TryGetValue(string, out ReadOnlySpan<byte>)`             | Lowercase conversion via `stackalloc`. 128-character limit.       |
+| Member                                                          | Description                                                       |
+|-----------------------------------------------------------------|-------------------------------------------------------------------|
+| `Count`                                                         | Number of headers added                                           |
+| `TryGetValue(ReadOnlySpan<byte>, out ReadOnlySpan<byte>)`       | Zero-alloc lookup. `lowercaseName` **must already be lowercase**. |
+| `TryGetValue(string, out ReadOnlySpan<byte>)`                   | Lowercase conversion via `stackalloc`. 128-character limit.       |
+| `TryGetAllValues(ReadOnlySpan<byte>, out HeaderValues)`         | Enumerate all values for a repeated header name (zero-alloc).     |
 
 **Important:** Header names are **lowercase-normalised** during `Add()`. Lookup is always done with `SequenceEqual`.  
 `HttpHeaderNames` constants are already lowercase and can be used directly:
@@ -507,9 +578,10 @@ Access:    public static
 Provides commonly used header names as lowercase `ReadOnlySpan<byte>`.
 
 ```
-Host · Connection · ContentLength · ContentType · TransferEncoding
-Accept · AcceptEncoding · Authorization · UserAgent · CacheControl · Cookie · Origin · Referer
-Location · SetCookie · ETag · Vary · Date · Server
+Host · Connection · ContentLength · ContentType · TransferEncoding · Expect
+Accept · AcceptEncoding · Authorization · UserAgent · CacheControl · Cookie
+IfMatch · IfNoneMatch · IfModifiedSince · IfUnmodifiedSince · Origin · Referer
+Location · SetCookie · ETag · LastModified · Vary · WwwAuthenticate · Allow · RetryAfter
 AccessControlAllowOrigin · AccessControlAllowMethods · AccessControlAllowHeaders
 AccessControlMaxAge · AccessControlExposeHeaders
 ```
@@ -675,17 +747,45 @@ Zero-allocation socket receive wrapper. One instance per connection; must be `Di
 
 ### `HttpParser` (internal static)
 
-Parses HTTP/1.x requests.
+Parses HTTP/1.x requests in a single pass.
 
 | Member                                                 | Description                                                  |
 |--------------------------------------------------------|--------------------------------------------------------------|
-| `TryParse(ref SequenceReader<byte>, out HttpRequest?)` | Two-phase parse. Returns `false` if data is insufficient.    |
-| `ScanForComplete(ref reader, out contentLength)`       | Phase 1: zero-allocation scan                                |
-| `TryExtractContentLength(line, ref contentLength)`     | Extracts the `content-length:` header value                  |
-| `ParseRequestLine(seq, buf, ref writePos, req)`        | Parses method + path + query + version                       |
+| `TryParse(ref SequenceReader<byte>, out HttpRequest?)` | Two-phase parse. Returns `HttpParseResult` (see below).      |
+| `ScanForComplete(ref reader, out contentLength)`       | Phase 1: zero-allocation scan for complete message           |
+| `TryExtractContentLength(line, ref contentLength)`     | Extracts and validates the `content-length:` value           |
+| `ParseRequestLine(seq, buf, ref writePos, req)`        | Parses method + request-target (all four forms) + version    |
 | `ParseHeaderLine(seq, ref headers)`                    | Parses a single header line                                  |
 | `AddHeaderFromSpan(line, ref headers)`                 | Splits `Name: Value`, calls `headers.Add()`                  |
 | `ComputeKeepAlive(version, ref headers)`               | Computes `IsKeepAlive` from HTTP version + Connection header |
+
+**`HttpParseResult` enum:**
+`Success` · `Incomplete` · `Invalid` · `RequestTargetTooLong` · `HeaderFieldsTooLarge` · `HttpVersionNotSupported` · `ConflictingContentLength` · `MissingHostHeader`
+
+---
+
+### `ChunkedBodyParser` (internal static)
+
+Decodes `Transfer-Encoding: chunked` request bodies.
+
+| Member                                                            | Description                                                    |
+|-------------------------------------------------------------------|----------------------------------------------------------------|
+| `TryParseChunkSize(ReadOnlySpan<byte>, out int)`                  | Parses hex chunk-size line, supports chunk extensions           |
+| `TryConsumeChunkData(ReadOnlySpan<byte>, int, out ReadOnlySpan<byte>)` | Extracts chunk data and validates trailing CRLF           |
+| `TryParseTrailers(ReadOnlySpan<byte>)`                            | Detects and skips trailer headers after the final `0\r\n` chunk |
+
+---
+
+### `RequestTargetForm` (internal enum)
+
+Identifies the form of the HTTP request-target per RFC 7230 §5.3.
+
+```csharp
+Origin = 0,    // /path?query           (most common)
+Absolute = 1,  // http://host/path      (proxy requests)
+Authority = 2, // host:port             (CONNECT only)
+Asterisk = 3   // *                     (OPTIONS only)
+```
 
 ---
 
@@ -702,9 +802,10 @@ The parser uses a short length/byte dispatch instead of chaining multiple `Seque
 
 ### `HttpVersionParser` (internal static)
 
-| Member                      | Description                                                         |
-|-----------------------------|---------------------------------------------------------------------|
-| `Parse(ReadOnlySpan<byte>)` | `"HTTP/1.1"` → `Http11`, `"HTTP/1.0"` → `Http10`, other → `Unknown` |
+| Member                      | Description                                                                                  |
+|-----------------------------|----------------------------------------------------------------------------------------------|
+| `Parse(ReadOnlySpan<byte>)` | `"HTTP/1.1"` → `Http11`, `"HTTP/1.0"` → `Http10`, other → `Unknown`                         |
+| `IsMalformed(ReadOnlySpan<byte>)` | `true` when the token is not 8 bytes or not in the format `HTTP/x.y` (digits only)     |
 
 ---
 
@@ -876,7 +977,7 @@ The script spins up PostgreSQL, initialises the schema, runs the full suite (fra
 Anka/
 ├── Anka.slnx
 │
-├── Anka/                          ← Library
+├── src/Anka/                      ← Library
 │   ├── Anka.csproj                  (AOT, InternalsVisibleTo: Test + Benchmark)
 │   ├── anka-logo.png                (package icon)
 │   └── src/
@@ -893,21 +994,24 @@ Anka/
 │       │   ├── ResponseContext.cs   (fluent header builder)
 │       │   ├── Server.cs            (public entry point)
 │       │   └── ServerOptions.cs     (optional server configuration)
+│       ├── Extensions/
+│       │   └── HttpRequestExtensions.cs (helper extensions for HttpRequest)
 │       ├── Internal/              ← Implementation details (internal)
+│       │   ├── ChunkedBodyParser.cs  (Transfer-Encoding: chunked decoder)
 │       │   ├── Connection.cs        (socket lifecycle + sliding receive window)
 │       │   ├── HttpMethodParser.cs  (byte span → HttpMethod enum)
+│       │   ├── HttpParseResult.cs   (parse result enum)
 │       │   ├── HttpParser.cs        (two-phase HTTP/1.x parser)
 │       │   ├── HttpRequestPool.cs   (CAS single-slot object pool)
-│       │   ├── HttpVersionParser.cs (byte span → HttpVersion enum)
+│       │   ├── HttpVersionParser.cs (byte span → HttpVersion enum + malformed check)
+│       │   ├── RequestTargetForm.cs (origin / absolute / authority / asterisk enum)
 │       │   └── SocketReceiver.cs    (zero-alloc SocketAsyncEventArgs + IValueTaskSource)
 │       └── Exceptions/
 │           ├── AnkaArgumentException.cs
 │           └── AnkaOutOfRangeException.cs
 │
-├── Anka.Console/                  ← Sample application
-│   └── Program.cs                   (Hello World server on :8080)
-│
-├── Anka.Test/                     ← xUnit tests
+├── Test/Anka.Test/                ← xUnit tests (242 tests)
+│   ├── ChunkedBodyParserTests.cs
 │   ├── ContentLengthValidationTests.cs
 │   ├── CustomResponseHeaderTests.cs
 │   ├── HttpHeadersTests.cs
@@ -916,13 +1020,17 @@ Anka/
 │   ├── HttpRequestTests.cs
 │   ├── HttpVersionParserTests.cs
 │   ├── RequestBodySizeLimitTests.cs
-│   └── ServerTests.cs
+│   ├── RequestHeaderAndVersionValidationTests.cs
+│   ├── RequestTargetSizeLimitTests.cs
+│   ├── ServerTests.cs
+│   └── TransportTests.cs
 │
 ├── Test/LoadTest/
 │   ├── Anka.HttpConsole/          ← Native AOT load-test target
 │   ├── Kestrel.HttpConsole/       ← Minimal ASP.NET Core comparison target
 │   └── Anka.Wrk.LoadTest/         ← wrk-based startup + throughput harness
 ├── Benchmark/Anka.Benchmark/      ← BenchmarkDotNet micro-benchmarks
+│   ├── ChunkedBodyParserBenchmarks.cs
 │   ├── HttpHeadersBenchmarks.cs
 │   ├── HttpMethodParserBenchmarks.cs
 │   ├── HttpParserBenchmarks.cs
@@ -931,6 +1039,32 @@ Anka/
 │   └── run-linux-benchmark.sh     ← Docker helper: run load test on Linux
 └── Dockerfile.benchmark           ← Linux load-test image (wrk + .NET SDK + AOT tools)
 ```
+
+---
+
+## Test Coverage
+
+**242 tests** — all passing.
+
+```bash
+dotnet test Anka.slnx --nologo
+```
+
+| Test Suite | Tests | Coverage Area |
+|---|---:|---|
+| `HttpParserTests` | 49 | Full request parsing, all target forms, error paths |
+| `HttpRequestTests` | 21 | Request object lifecycle, reset, disposal |
+| `HttpHeadersTests` | 13 | Header add/lookup, `TryGetAllValues`, duplicate headers |
+| `ServerTests` | 17 | End-to-end server behaviour, graceful shutdown |
+| `TransportTests` | 15 | Keep-alive, pipelining, HEAD/304 suppression, 100-continue |
+| `ContentLengthValidationTests` | 15 | Content-Length parsing, conflicts, malformed values |
+| `CustomResponseHeaderTests` | 14 | Default/extra response headers, security headers |
+| `ChunkedBodyParserTests` | 12 | Chunk parsing, trailers, overflow, invalid chunks |
+| `RequestHeaderAndVersionValidationTests` | 10 | Host validation, HTTP version errors, 400/505 |
+| `RequestBodySizeLimitTests` | 10 | Body size enforcement, 413 responses |
+| `HttpVersionParserTests` | 8 | Version parsing, malformed token detection |
+| `RequestTargetSizeLimitTests` | 7 | Target size enforcement, 414 responses |
+| `HttpMethodParserTests` | 6 | All HTTP method tokens, unknown methods |
 
 ---
 
