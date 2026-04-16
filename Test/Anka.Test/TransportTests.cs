@@ -149,6 +149,65 @@ public class TransportTests
         await Assert.ThrowsAnyAsync<Exception>(() => reader.ReadResponseAsync(timeout.Token));
     }
 
+    [Fact]
+    public async Task HeadRequest_SendsHeadersWithoutBody()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (request, response, cancellationToken) =>
+                response.WriteAsync(200, OkBody, TextPlainBytes, keepAlive: request.IsKeepAlive, cancellationToken: cancellationToken));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        const string request =
+            "HEAD / HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: close\r\n\r\n";
+
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), timeout.Token);
+
+        var responseHeaders = await reader.ReadHeadersOnlyAsync(timeout.Token);
+        await Task.Delay(100, timeout.Token);
+
+        Assert.Contains("HTTP/1.1 200 OK", responseHeaders);
+        Assert.Contains("Content-Length: 2", responseHeaders);
+        Assert.DoesNotContain("OK", responseHeaders.Split("\r\n\r\n")[^1], StringComparison.Ordinal);
+        Assert.False(reader.HasBufferedData);
+        Assert.False(stream.DataAvailable);
+    }
+
+    [Fact]
+    public async Task NotModifiedResponse_SendsHeadersWithoutBody()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, response, cancellationToken) =>
+                response.WriteAsync(304, OkBody, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        const string request =
+            "GET / HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: close\r\n\r\n";
+
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), timeout.Token);
+
+        var responseHeaders = await reader.ReadHeadersOnlyAsync(timeout.Token);
+        await Task.Delay(100, timeout.Token);
+
+        Assert.Contains("HTTP/1.1 304 Not Modified", responseHeaders);
+        Assert.Contains("Content-Length: 2", responseHeaders);
+        Assert.False(reader.HasBufferedData);
+        Assert.False(stream.DataAvailable);
+    }
+
     private sealed class TestServer : IAsyncDisposable
     {
         private readonly CancellationTokenSource _cts;
@@ -189,6 +248,7 @@ public class TransportTests
     private sealed class HttpResponseReader(NetworkStream stream)
     {
         private readonly List<byte> _buffer = [];
+        public bool HasBufferedData => _buffer.Count > 0;
 
         public async Task<string> ReadResponseAsync(CancellationToken cancellationToken)
         {
@@ -204,6 +264,29 @@ public class TransportTests
                 if (read == 0)
                 {
                     throw new InvalidOperationException("Socket closed before a full HTTP response was received.");
+                }
+
+                _buffer.AddRange(temp.AsSpan(0, read).ToArray());
+            }
+        }
+
+        public async Task<string> ReadHeadersOnlyAsync(CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                var headerEnd = FindHeaderEnd(_buffer);
+                if (headerEnd >= 0)
+                {
+                    var headerBytes = _buffer.GetRange(0, headerEnd).ToArray();
+                    _buffer.RemoveRange(0, headerEnd);
+                    return Encoding.ASCII.GetString(headerBytes);
+                }
+
+                var temp = new byte[1024];
+                var read = await stream.ReadAsync(temp, cancellationToken);
+                if (read == 0)
+                {
+                    throw new InvalidOperationException("Socket closed before HTTP response headers were received.");
                 }
 
                 _buffer.AddRange(temp.AsSpan(0, read).ToArray());

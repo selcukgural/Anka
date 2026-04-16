@@ -92,6 +92,7 @@ internal sealed class Connection
                 {
                     // Reset for reuse — keeps buffers, clears fields.
                     request.ResetForReuse();
+                    writer.SetSuppressResponseBody(false);
 
                     var parseResult = TryParseNext(
                         buf,
@@ -126,6 +127,7 @@ internal sealed class Connection
                     parseOffset += bytesConsumed;
 
                     var keepAlive = request.IsKeepAlive;
+                    writer.SetSuppressResponseBody(request.Method == HttpMethod.Head);
 
                     if (request.HasChunkedTransferEncoding)
                     {

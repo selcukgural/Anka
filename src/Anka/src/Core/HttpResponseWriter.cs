@@ -27,6 +27,7 @@ public sealed class HttpResponseWriter : IDisposable
 
     private readonly Socket _socket;
     private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
+    private bool _suppressResponseBody;
 
     /// <summary>
     /// Connection-scoped buffer reused across keep-alive responses. Rented once in the
@@ -47,6 +48,8 @@ public sealed class HttpResponseWriter : IDisposable
         _defaultHeaders = defaultHeaders ?? [];
         _buf            = ArrayPool<byte>.Shared.Rent(DefaultBufSize);
     }
+
+    internal void SetSuppressResponseBody(bool suppressResponseBody) => _suppressResponseBody = suppressResponseBody;
 
     /// <summary>
     /// Releases resources used by the internal connection-scoped buffer
@@ -113,7 +116,8 @@ public sealed class HttpResponseWriter : IDisposable
                                 ReadOnlySpan<HttpHeader> extraHeaders, CancellationToken cancellationToken = default)
     {
         const int headerEstimate = 512;
-        var smallBodyThreshold = body.Length <= 4096 ? body.Length : 0;
+        var suppressBody = _suppressResponseBody || statusCode == 304;
+        var smallBodyThreshold = !suppressBody && body.Length <= 4096 ? body.Length : 0;
 
         // Account for default + extra headers: "name: value\r\n" per entry
         var extraSize = 0;
@@ -142,7 +146,7 @@ public sealed class HttpResponseWriter : IDisposable
         var pos = BuildHeaderBlock(buf, statusCode, body, keepAlive, contentType, _defaultHeaders, extraHeaders, smallBodyThreshold);
 
         // Fast synchronous path: try sending without async state machine.
-        if (smallBodyThreshold > 0 || body.IsEmpty)
+        if (smallBodyThreshold > 0 || body.IsEmpty || suppressBody)
         {
             // Single buffer send it (headers + inline body, or headers only).
             return SendSingleBuffer(buf, pos, tempBuf, cancellationToken);

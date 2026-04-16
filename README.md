@@ -213,6 +213,8 @@ var server = new Server(
 
 Conflicting duplicate `Content-Length` headers are rejected with `400 Bad Request`. Repeated identical numeric values are accepted.
 
+Responses to `HEAD` requests and `304 Not Modified` responses suppress payload bytes on the wire, while still emitting `Content-Length` for the supplied body length.
+
 ### Simple Path-Based Routing
 
 ```csharp
