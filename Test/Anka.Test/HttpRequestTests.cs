@@ -15,7 +15,7 @@ public class HttpRequestTests
         var seq    = new ReadOnlySequence<byte>(bytes);
         var reader = new SequenceReader<byte>(seq);
         var req    = new HttpRequest();
-        var ok     = HttpParser.TryParse(ref reader, req);
+        var ok     = HttpParser.TryParse(ref reader, req) == HttpParseResult.Success;
         Assert.True(ok, "Expected request to parse successfully.");
         return req;
     }

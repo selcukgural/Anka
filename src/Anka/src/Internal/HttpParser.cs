@@ -12,7 +12,7 @@ namespace Anka;
 /// inline during header parsing, so no second scan is needed.
 ///
 /// HTTP method and version values are parsed as enums. Header names are
-/// normalised to lowercase in-place. If a body is present (Content-Length > 0),
+/// normalized to lowercase in-place. If a body is present (Content-Length > 0),
 /// a separate buffer is rented and the body bytes are copied into it. On any
 /// failure all rented buffers are returned immediately. On success ownership of
 /// the buffers transfers to the returned <see cref="HttpRequest"/>; the caller
@@ -25,7 +25,7 @@ internal static class HttpParser
     /// reusing the supplied <paramref name="req"/> instance and its existing buffer
     /// when possible to avoid per-request allocations.
     /// </summary>
-    public static bool TryParse(ref SequenceReader<byte> reader, HttpRequest req)
+    public static HttpParseResult TryParse(ref SequenceReader<byte> reader, HttpRequest req, int? maxRequestTargetSize = null)
     {
         // Work on a copy so the original reader advances only on success.
         var parser = reader;
@@ -33,7 +33,7 @@ internal static class HttpParser
         // Request line — fast exit before any allocation if incomplete.
         if (!parser.TryReadTo(out ReadOnlySequence<byte> requestLine, "\r\n"u8))
         {
-            return false;
+            return HttpParseResult.Incomplete;
         }
 
         // Determine required buffer size for path + query + headers.
@@ -54,9 +54,10 @@ internal static class HttpParser
         var buf = req.Buffer;
         var writePos = 0;
 
-        if (!ParseRequestLine(requestLine, buf, ref writePos, req))
+        var requestLineResult = ParseRequestLine(requestLine, buf, ref writePos, req, maxRequestTargetSize);
+        if (requestLineResult != HttpParseResult.Success)
         {
-            return false;
+            return requestLineResult;
         }
 
         req.Headers.InitBuffer(buf, writePos);
@@ -68,7 +69,7 @@ internal static class HttpParser
         {
             if (!parser.TryReadTo(out ReadOnlySequence<byte> headerLine, "\r\n"u8))
             {
-                return false;
+                return HttpParseResult.Incomplete;
             }
 
             if (headerLine.Length == 0)
@@ -91,7 +92,7 @@ internal static class HttpParser
         {
             if (parser.Remaining < contentLength)
             {
-                return false;
+                return HttpParseResult.Incomplete;
             }
 
             // Reuse existing body buffer if large enough.
@@ -113,7 +114,7 @@ internal static class HttpParser
         req.IsKeepAlive = ComputeKeepAlive(req.Version, ref req.Headers);
 
         reader = parser; // commit — advance original reader on success
-        return true;
+        return HttpParseResult.Success;
     }
 
     /// <summary>
@@ -171,8 +172,14 @@ internal static class HttpParser
     /// <param name="buf">The shared buffer used for copying path and query data.</param>
     /// <param name="writePos">A reference to the position in the shared buffer where data should be written.</param>
     /// <param name="req">An instance of the <see cref="HttpRequest"/> class to hold the parsed request information.</param>
-    /// <returns>True if the request line is successfully parsed and valid; otherwise, false.</returns>
-    private static bool ParseRequestLine(ReadOnlySequence<byte> seq, byte[] buf, ref int writePos, HttpRequest req)
+    /// <param name="maxRequestTargetSize">The optional maximum allowed size, in bytes, of the raw request-target.</param>
+    /// <returns>The parse result for the request line.</returns>
+    private static HttpParseResult ParseRequestLine(
+        ReadOnlySequence<byte> seq,
+        byte[] buf,
+        ref int writePos,
+        HttpRequest req,
+        int? maxRequestTargetSize)
     {
         // Flatten to a span; single-segment is the common (zero-copy) path.
         ReadOnlySpan<byte> line;
@@ -195,7 +202,7 @@ internal static class HttpParser
             var s1 = line.IndexOf((byte)' ');
             if (s1 <= 0)
             {
-                return false;
+                return HttpParseResult.Invalid;
             }
 
             req.Method = HttpMethodParser.Parse(line[..s1]);
@@ -204,11 +211,16 @@ internal static class HttpParser
             var s2 = rest.IndexOf((byte)' ');
             if (s2 <= 0)
             {
-                return false;
+                return HttpParseResult.Invalid;
             }
 
             var rawPath = rest[..s2];
             var versionSpan = rest[(s2 + 1)..].TrimEnd((byte)'\r');
+
+            if (maxRequestTargetSize is { } limit && rawPath.Length > limit || rawPath.Length > ushort.MaxValue)
+            {
+                return HttpParseResult.RequestTargetTooLong;
+            }
 
             req.Version = HttpVersionParser.Parse(versionSpan);
 
@@ -216,6 +228,11 @@ internal static class HttpParser
             var q = rawPath.IndexOf((byte)'?');
             var pathPart = q >= 0 ? rawPath[..q] : rawPath;
             var queryPart = q >= 0 ? rawPath[(q + 1)..] : ReadOnlySpan<byte>.Empty;
+
+            if (pathPart.Length > ushort.MaxValue || queryPart.Length > ushort.MaxValue)
+            {
+                return HttpParseResult.RequestTargetTooLong;
+            }
 
             // Copy into shared buffer
             var pathOffset = (ushort)writePos;
@@ -233,7 +250,9 @@ internal static class HttpParser
 
             req.SetQuery(queryOffset, (ushort)queryPart.Length);
 
-            return req.Method != HttpMethod.Unknown && req.Version != HttpVersion.Unknown;
+            return req.Method != HttpMethod.Unknown && req.Version != HttpVersion.Unknown
+                ? HttpParseResult.Success
+                : HttpParseResult.Invalid;
         }
         finally
         {

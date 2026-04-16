@@ -16,7 +16,16 @@ public class HttpParserTests
         var seq   = new ReadOnlySequence<byte>(bytes);
         var reader = new SequenceReader<byte>(seq);
         request.ResetForReuse();
-        return HttpParser.TryParse(ref reader, request);
+        return HttpParser.TryParse(ref reader, request) == HttpParseResult.Success;
+    }
+
+    private static HttpParseResult TryParseResult(string raw, HttpRequest request, int? maxRequestTargetSize = null)
+    {
+        var bytes = Encoding.ASCII.GetBytes(raw);
+        var seq   = new ReadOnlySequence<byte>(bytes);
+        var reader = new SequenceReader<byte>(seq);
+        request.ResetForReuse();
+        return HttpParser.TryParse(ref reader, request, maxRequestTargetSize);
     }
 
     private static bool TryParse(string raw, out HttpRequest? request)
@@ -205,7 +214,11 @@ public class HttpParserTests
     [Fact]
     public void TryParse_PartialRequestLine_ReturnsFalse()
     {
-        Assert.False(TryParse("GET / HTTP/1.1", out var req));
+        var request = CreateRequest();
+        var result = TryParseResult("GET / HTTP/1.1", request);
+        Assert.Equal(HttpParseResult.Incomplete, result);
+        request.Dispose();
+        HttpRequest? req = null;
         Assert.Null(req);
     }
 
@@ -213,33 +226,60 @@ public class HttpParserTests
     public void TryParse_MissingHeaderTerminator_ReturnsFalse()
     {
         // Headers not terminated with \r\n\r\n
-        Assert.False(TryParse("GET / HTTP/1.1\r\nHost: example.com\r\n", out var req));
+        var request = CreateRequest();
+        var result = TryParseResult("GET / HTTP/1.1\r\nHost: example.com\r\n", request);
+        Assert.Equal(HttpParseResult.Incomplete, result);
+        request.Dispose();
+        HttpRequest? req = null;
         Assert.Null(req);
     }
 
     [Fact]
     public void TryParse_UnknownMethod_ReturnsFalse()
     {
-        const string raw = "BREW /coffee HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        Assert.False(TryParse(raw, out var req));
-        Assert.Null(req);
+        var req = CreateRequest();
+        var result = TryParseResult("BREW /coffee HTTP/1.1\r\nHost: example.com\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
     }
 
     [Fact]
     public void TryParse_UnknownVersion_ReturnsFalse()
     {
-        const string raw = "GET / HTTP/2.0\r\nHost: example.com\r\n\r\n";
-        Assert.False(TryParse(raw, out var req));
-        Assert.Null(req);
+        var req = CreateRequest();
+        var result = TryParseResult("GET / HTTP/2.0\r\nHost: example.com\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
     }
 
     [Fact]
     public void TryParse_BodyTruncated_ReturnsFalse()
     {
         // Content-Length says 10 but only 5 bytes of body present
-        const string raw = "POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nhello";
-        Assert.False(TryParse(raw, out var req));
-        Assert.Null(req);
+        var req = CreateRequest();
+        var result = TryParseResult("POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nhello", req);
+        Assert.Equal(HttpParseResult.Incomplete, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_RequestTargetExceedsLimit_ReturnsRequestTargetTooLong()
+    {
+        var raw = $"GET /{new string('a', 32)} HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req, maxRequestTargetSize: 16);
+        Assert.Equal(HttpParseResult.RequestTargetTooLong, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_QueryCountsTowardsRequestTargetLimit()
+    {
+        const string raw = "GET /search?q=hello HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req, maxRequestTargetSize: 8);
+        Assert.Equal(HttpParseResult.RequestTargetTooLong, result);
+        req.Dispose();
     }
 
     [Fact]

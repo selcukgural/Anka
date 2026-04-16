@@ -93,9 +93,29 @@ internal sealed class Connection
                     // Reset for reuse — keeps buffers, clears fields.
                     request.ResetForReuse();
 
-                    if (!TryParseNext(buf, parseOffset, end - parseOffset, request, out var bytesConsumed))
+                    var parseResult = TryParseNext(
+                        buf,
+                        parseOffset,
+                        end - parseOffset,
+                        request,
+                        _serverOptions.MaxRequestTargetSize,
+                        out var bytesConsumed);
+
+                    if (parseResult == HttpParseResult.Incomplete)
                     {
                         break; // incomplete request — wait for more bytes
+                    }
+
+                    if (parseResult == HttpParseResult.Invalid)
+                    {
+                        await writer.WriteAsync(400, keepAlive: false, cancellationToken: _cancellationToken);
+                        return;
+                    }
+
+                    if (parseResult == HttpParseResult.RequestTargetTooLong)
+                    {
+                        await writer.WriteAsync(414, keepAlive: false, cancellationToken: _cancellationToken);
+                        return;
                     }
 
                     parseOffset += bytesConsumed;
@@ -107,7 +127,7 @@ internal sealed class Connection
                         await writer.WriteAsync(501, keepAlive: false, cancellationToken: _cancellationToken);
                         return;
                     }
-
+                    
                     if (!request.ValidateContentLengthFor411())
                     {
                         await writer.WriteAsync(411, keepAlive: false, cancellationToken: _cancellationToken);
@@ -176,21 +196,33 @@ internal sealed class Connection
     }
 
     /// <summary>
-    /// Synchronous wrapper: keeps <see cref="SequenceReader{T}"/> (a ref struct) out of
-    /// the async state machine. Returns the number of bytes consumed on success.
+    /// Attempts to parse the next HTTP request from the provided buffer.
+    /// Returns the HTTP parsing result and the number of bytes consumed on success.
     /// </summary>
-    private static bool TryParseNext(byte[] buf, int offset, int length, HttpRequest request, out int consumed)
+    /// <param name="buf">The byte buffer containing the raw HTTP data to parse.</param>
+    /// <param name="offset">The starting position within the buffer to begin parsing.</param>
+    /// <param name="length">The number of bytes available for parsing starting from the offset.</param>
+    /// <param name="request">An instance of <see cref="HttpRequest"/> where the parsed HTTP request data will be populated.</param>
+    /// <param name="maxRequestTargetSize">The maximum allowed size of the request target. If null, no limit is applied.</param>
+    /// <param name="consumed">The number of bytes consumed during parsing, set to 0 on failure.</param>
+    /// <returns>
+    /// A <see cref="HttpParseResult"/> value indicating the result of the parsing operation.
+    /// Possible values are <see cref="HttpParseResult.Success"/>, <see cref="HttpParseResult.Incomplete"/>,
+    /// <see cref="HttpParseResult.Invalid"/>, or <see cref="HttpParseResult.RequestTargetTooLong"/>.
+    /// </returns>
+    private static HttpParseResult TryParseNext(byte[] buf, int offset, int length, HttpRequest request, int? maxRequestTargetSize, out int consumed)
     {
         var seq = new ReadOnlySequence<byte>(buf, offset, length);
         var reader = new SequenceReader<byte>(seq);
+        var result = HttpParser.TryParse(ref reader, request, maxRequestTargetSize);
 
-        if (HttpParser.TryParse(ref reader, request))
+        if (result == HttpParseResult.Success)
         {
             consumed = (int)reader.Consumed;
-            return true;
+            return HttpParseResult.Success;
         }
 
         consumed = 0;
-        return false;
+        return result;
     }
 }

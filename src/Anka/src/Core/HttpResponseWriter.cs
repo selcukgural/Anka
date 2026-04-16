@@ -575,6 +575,7 @@ public sealed class HttpResponseWriter : IDisposable
         405 => "Method Not Allowed"u8,
         411 => "Length Required"u8,
         413 => "Payload Too Large"u8,
+        414 => "URI Too Long"u8,
         415 => "Unsupported Media Type"u8,
         429 => "Too Many Requests"u8,
         431 => "Request Header Fields Too Large"u8,

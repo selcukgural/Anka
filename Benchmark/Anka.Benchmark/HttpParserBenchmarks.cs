@@ -70,7 +70,7 @@ public class HttpParserBenchmarks
         var seq    = new ReadOnlySequence<byte>(_simpleGet);
         var reader = new SequenceReader<byte>(seq);
         _req.ResetForReuse();
-        return HttpParser.TryParse(ref reader, _req);
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
     }
 
     /// <summary>GET with 10 headers — typical browser-like request.</summary>
@@ -80,7 +80,7 @@ public class HttpParserBenchmarks
         var seq    = new ReadOnlySequence<byte>(_getWithHeaders);
         var reader = new SequenceReader<byte>(seq);
         _req.ResetForReuse();
-        return HttpParser.TryParse(ref reader, _req);
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
     }
 
     /// <summary>POST with a 128-byte body — common API payload size.</summary>
@@ -90,7 +90,7 @@ public class HttpParserBenchmarks
         var seq    = new ReadOnlySequence<byte>(_postSmallBody);
         var reader = new SequenceReader<byte>(seq);
         _req.ResetForReuse();
-        return HttpParser.TryParse(ref reader, _req);
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
     }
 
     /// <summary>POST with a 64 KB body — measures body copy overhead.</summary>
@@ -100,7 +100,7 @@ public class HttpParserBenchmarks
         var seq    = new ReadOnlySequence<byte>(_postLargeBody);
         var reader = new SequenceReader<byte>(seq);
         _req.ResetForReuse();
-        return HttpParser.TryParse(ref reader, _req);
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
     }
 
     private static byte[] Encode(string s) => Encoding.ASCII.GetBytes(s);

@@ -114,6 +114,7 @@ Graceful shutdown with `Ctrl+C`.
 var options = new ServerOptions
 {
     MaxRequestBodySize = 1 * 1024 * 1024, // 1 MB
+    MaxRequestTargetSize = 8 * 1024,      // 8 KB
     DefaultResponseHeaders =
     [
         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
@@ -283,7 +284,8 @@ var server = new Server(handler, port: 8080, options: options);
 // Requests with a body exceeding 512 KB automatically receive 413 Payload Too Large.
 var options = new ServerOptions
 {
-    MaxRequestBodySize = 512 * 1024
+    MaxRequestBodySize = 512 * 1024,
+    MaxRequestTargetSize = 8 * 1024
 };
 
 var server = new Server(handler, port: 8080, options: options);
@@ -438,7 +440,7 @@ ValueTask WriteAsync(
 > **Fluent API:** Use `response.AddHeader(name, value).WriteAsync(...)` to attach extra headers without building an array. See `HttpResponseWriterExtensions`.
 
 **Supported Status Code Reason Phrases:**
-200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · others → "Unknown"
+200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 414 URI Too Long · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · others → "Unknown"
 
 ---
 
@@ -525,7 +527,7 @@ Derives from `ArgumentException`. Thrown when an invalid argument is provided (e
 
 ### `AnkaOutOfRangeException`
 
-Derives from `ArgumentOutOfRangeException`. Thrown when a numeric argument is outside its valid range — port outside 1–65535, or `ServerOptions.MaxRequestBodySize` set to a negative value.
+Derives from `ArgumentOutOfRangeException`. Thrown when a numeric argument is outside its valid range — port outside 1–65535, or `ServerOptions.MaxRequestBodySize` / `ServerOptions.MaxRequestTargetSize` set to a negative value.
 
 ---
 
@@ -545,14 +547,16 @@ Optional configuration passed to the `Server` constructor. All properties are op
 | `Backlog`                 | `int`                        | `512`                            | Backlog passed to `Socket.Listen()`.                                                                            |
 | `DefaultResponseHeaders`  | `IReadOnlyList<HttpHeader>`  | `[]`                             | Headers appended to every response (e.g., security headers). Allocated once at startup — zero per-request cost. |
 | `MaxRequestBodySize`      | `int?`                       | `null` (unlimited)               | Maximum allowed request body in bytes. Requests that exceed this limit automatically receive `413 Payload Too Large`. |
+| `MaxRequestTargetSize`    | `int?`                       | `null` (unlimited)               | Maximum allowed request-target size in bytes. Requests that exceed this limit automatically receive `414 URI Too Long`. |
 
 **Example:**
 
 ```csharp
 var options = new ServerOptions
 {
-    AcceptorCount      = 4,
-    MaxRequestBodySize = 1 * 1024 * 1024,  // 1 MB
+    AcceptorCount        = 4,
+    MaxRequestBodySize   = 1 * 1024 * 1024,  // 1 MB
+    MaxRequestTargetSize = 8 * 1024,         // 8 KB
     DefaultResponseHeaders =
     [
         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),

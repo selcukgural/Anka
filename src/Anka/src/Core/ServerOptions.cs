@@ -10,6 +10,7 @@ namespace Anka;
 public sealed class ServerOptions
 {
     private int? _maxRequestBodySize;
+    private int? _maxRequestTargetSize;
 
     /// <summary>
     /// The minimum number of worker and I/O-completion threads that
@@ -84,6 +85,35 @@ public sealed class ServerOptions
             }
             
             _maxRequestBodySize = value;
+        }
+    }
+
+    /// <summary>
+    /// Specifies the maximum allowed size, in bytes, for the HTTP request target
+    /// from the request line (for example, <c>/path?query=value</c>).
+    /// <para>
+    /// When set to a non-<see langword="null"/> value, requests whose target exceeds
+    /// the specified limit will receive a 414 (URI Too Long) response, and the
+    /// connection will be closed.
+    /// </para>
+    /// <para>
+    /// A <see langword="null"/> value (the default) imposes no limit on request-target size.
+    /// </para>
+    /// <exception cref="AnkaOutOfRangeException">
+    /// Thrown when an attempt is made to set a negative value.
+    /// </exception>
+    /// </summary>
+    public int? MaxRequestTargetSize
+    {
+        get => _maxRequestTargetSize;
+        set
+        {
+            if (value < 0)
+            {
+                throw new AnkaOutOfRangeException(nameof(MaxRequestTargetSize), "Value must be non-negative.");
+            }
+            
+            _maxRequestTargetSize = value;
         }
     }
 }
