@@ -217,6 +217,8 @@ Responses to `HEAD` requests and `304 Not Modified` responses suppress payload b
 
 `HTTP/1.1` requests must include a `Host` header. Requests that omit it are rejected with `400 Bad Request`.
 
+Malformed HTTP version tokens are rejected with `400 Bad Request`. Well-formed but unsupported versions such as `HTTP/2.0` are rejected with `505 HTTP Version Not Supported`.
+
 ### Simple Path-Based Routing
 
 ```csharp

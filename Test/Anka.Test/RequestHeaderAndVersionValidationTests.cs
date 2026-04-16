@@ -6,8 +6,7 @@ using Anka.Exceptions;
 namespace Anka.Test;
 
 /// <summary>
-/// Integration tests for 431 Request Header Fields Too Large and
-/// 505 HTTP Version Not Supported behavior.
+/// Integration tests for request-header limits and HTTP version validation behavior.
 /// </summary>
 public class RequestHeaderAndVersionValidationTests
 {
@@ -113,6 +112,24 @@ public class RequestHeaderAndVersionValidationTests
         var response = await SendRawAsync(server.Port, request);
 
         Assert.Contains("HTTP/1.1 505 HTTP Version Not Supported", response);
+        Assert.Contains("Connection: close", response);
+    }
+
+    [Fact]
+    public async Task Get_MalformedHttpVersion_Returns400()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+
+        const string request =
+            "GET / http/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: close\r\n" +
+            "\r\n";
+
+        var response = await SendRawAsync(server.Port, request);
+
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
         Assert.Contains("Connection: close", response);
     }
 
