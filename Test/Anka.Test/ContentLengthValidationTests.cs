@@ -5,9 +5,8 @@ using System.Text;
 namespace Anka.Test;
 
 /// <summary>
-/// Integration tests for 411 Length Required validation.
-/// Verifies RFC 9110 §8.6 compliance: Content-Length is optional for zero-length bodies,
-/// but must be a valid non-negative integer when present.
+/// Integration tests for Content-Length framing validation.
+/// Verifies that malformed Content-Length values are rejected as bad request framing.
 /// </summary>
 public class ContentLengthValidationTests
 {
@@ -54,28 +53,28 @@ public class ContentLengthValidationTests
     }
 
     [Fact]
-    public async Task Post_WithNegativeContentLength_Returns411()
+    public async Task Post_WithNegativeContentLength_Returns400()
     {
         await using var server = await TestServer.StartAsync(
-            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
 
         var response = await SendRawAsync(server.Port,
             "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: -1\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 411 Length Required", response);
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
         Assert.Contains("Connection: close", response);
     }
 
     [Fact]
-    public async Task Post_WithNonNumericContentLength_Returns411()
+    public async Task Post_WithNonNumericContentLength_Returns400()
     {
         await using var server = await TestServer.StartAsync(
-            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
 
         var response = await SendRawAsync(server.Port,
             "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: abc\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 411 Length Required", response);
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
         Assert.Contains("Connection: close", response);
     }
 
@@ -132,15 +131,15 @@ public class ContentLengthValidationTests
     }
 
     [Fact]
-    public async Task Put_WithNegativeContentLength_Returns411()
+    public async Task Put_WithNegativeContentLength_Returns400()
     {
         await using var server = await TestServer.StartAsync(
-            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
 
         var response = await SendRawAsync(server.Port,
             "PUT /resource HTTP/1.1\r\nHost: example.com\r\nContent-Length: -5\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 411 Length Required", response);
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
     }
 
     // ── PATCH ────────────────────────────────────────────────────────────────
@@ -170,15 +169,15 @@ public class ContentLengthValidationTests
     }
 
     [Fact]
-    public async Task Patch_WithNonNumericContentLength_Returns411()
+    public async Task Patch_WithNonNumericContentLength_Returns400()
     {
         await using var server = await TestServer.StartAsync(
-            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
 
         var response = await SendRawAsync(server.Port,
             "PATCH /resource HTTP/1.1\r\nHost: example.com\r\nContent-Length: bad\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 411 Length Required", response);
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
     }
 
     // ── Non-body methods (GET, DELETE, HEAD, OPTIONS) ────────────────────────
@@ -201,16 +200,15 @@ public class ContentLengthValidationTests
     [Theory]
     [InlineData("GET")]
     [InlineData("DELETE")]
-    public async Task NonBodyMethod_WithInvalidContentLength_StillReturns200(string method)
+    public async Task NonBodyMethod_WithInvalidContentLength_Returns400(string method)
     {
-        // Content-Length validation only applies to POST/PUT/PATCH
         await using var server = await TestServer.StartAsync(
-            static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
 
         var response = await SendRawAsync(server.Port,
             $"{method} /resource HTTP/1.1\r\nHost: example.com\r\nContent-Length: -1\r\nConnection: close\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

@@ -82,6 +82,43 @@ public class RequestHeaderAndVersionValidationTests
     }
 
     [Fact]
+    public async Task Get_DuplicateHostHeaders_Returns400()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+
+        const string request =
+            "GET / HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Host: other.example\r\n" +
+            "Connection: close\r\n" +
+            "\r\n";
+
+        var response = await SendRawAsync(server.Port, request);
+
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
+        Assert.Contains("Connection: close", response);
+    }
+
+    [Fact]
+    public async Task Get_AbsoluteFormHostMismatch_Returns400()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
+
+        const string request =
+            "GET http://example.org/search HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: close\r\n" +
+            "\r\n";
+
+        var response = await SendRawAsync(server.Port, request);
+
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
+        Assert.Contains("Connection: close", response);
+    }
+
+    [Fact]
     public async Task Get_Http10WithoutHost_Returns200()
     {
         await using var server = await TestServer.StartAsync(

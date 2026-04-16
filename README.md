@@ -212,11 +212,11 @@ var server = new Server(
     port: 8080);
 ```
 
-Conflicting duplicate `Content-Length` headers are rejected with `400 Bad Request`. Repeated identical numeric values are accepted.
+Conflicting duplicate `Content-Length` headers are rejected with `400 Bad Request`. Malformed `Content-Length` framing is also rejected with `400 Bad Request`.
 
-Responses to `HEAD` requests and `304 Not Modified` responses suppress payload bytes on the wire, while still emitting `Content-Length` for the supplied body length.
+Responses to `HEAD` requests suppress payload bytes on the wire while preserving representation headers. `1xx`, `204`, and `304` responses omit payload bytes and body-describing headers such as `Content-Length` and `Content-Type`.
 
-`HTTP/1.1` requests must include a `Host` header. Requests that omit it are rejected with `400 Bad Request`.
+`HTTP/1.1` requests must include a valid `Host` header. Missing, duplicate, invalid, or absolute-form-mismatched `Host` values are rejected with `400 Bad Request`.
 
 Malformed HTTP version tokens are rejected with `400 Bad Request`. Well-formed but unsupported versions such as `HTTP/2.0` are rejected with `505 HTTP Version Not Supported`.
 
@@ -418,7 +418,7 @@ Represents a parsed HTTP request. **Must not be used** after the handler complet
 | `QueryString` | `string?`              | Lazy-materialized query (`foo=bar`). `null` if no `?` present |
 | `QueryBytes`  | `ReadOnlySpan<byte>`   | Zero-copy raw query bytes                                     |
 | `Headers`     | `HttpHeaders`          | Header collection (struct, inline)                            |
-| `Body`        | `ReadOnlyMemory<byte>` | Request body. Empty if no Content-Length.                     |
+| `Body`        | `ReadOnlyMemory<byte>` | Request body. Populated from `Content-Length` or decoded chunked bodies; empty when no body is present. |
 | `IsKeepAlive` | `bool`                 | Is the connection persistent?                                 |
 
 **Note:** `Path` and `QueryString` call `Encoding.ASCII.GetString()` on first access and cache the result. `PathBytes` and `QueryBytes` never allocate.

@@ -145,7 +145,8 @@ public class HttpParserTests
     [InlineData("CONNECT")]
     public void TryParse_AllKnownMethods_ParsedSuccessfully(string method)
     {
-        var raw = $"{method} / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        var target = method == "CONNECT" ? "example.com:443" : "/";
+        var raw = $"{method} {target} HTTP/1.1\r\nHost: example.com\r\n\r\n";
         Assert.True(TryParse(raw, out var req));
         Assert.NotNull(req);
         req!.Return();
@@ -460,6 +461,172 @@ public class HttpParserTests
         Assert.Equal("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n".Length, consumed);
         Assert.True(req.HasChunkedTransferEncoding);
         Assert.True(req.Body.IsEmpty);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_AbsoluteFormRequest_NormalizesPathAndQuery()
+    {
+        const string raw = "GET http://example.com/search?q=hello HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        Assert.True(TryParse(raw, out var req));
+        Assert.Equal("/search", req!.Path);
+        Assert.Equal("q=hello", req.QueryString);
+        req.Return();
+    }
+
+    [Theory]
+    [InlineData("http://example.com:80/search", "example.com")]
+    [InlineData("https://example.com:443/search", "example.com")]
+    [InlineData("http://example.com/search", "example.com:80")]
+    [InlineData("https://example.com/search", "example.com:443")]
+    public void TryParse_AbsoluteFormDefaultPorts_AreTreatedAsEquivalent(string target, string host)
+    {
+        var raw = $"GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n";
+        Assert.True(TryParse(raw, out var req));
+        Assert.Equal("/search", req!.Path);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_AbsoluteFormWithoutPath_NormalizesToSlash()
+    {
+        const string raw = "GET http://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        Assert.True(TryParse(raw, out var req));
+        Assert.Equal("/", req!.Path);
+        Assert.Null(req.QueryString);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_AbsoluteFormQueryWithoutPath_NormalizesToSlashAndQuery()
+    {
+        const string raw = "GET http://example.com?q=hello HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        Assert.True(TryParse(raw, out var req));
+        Assert.Equal("/", req!.Path);
+        Assert.Equal("q=hello", req.QueryString);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_AbsoluteFormHostMismatch_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("GET http://example.org/search HTTP/1.1\r\nHost: example.com\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_DuplicateHostHeaders_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("GET / HTTP/1.1\r\nHost: example.com\r\nHost: other.example\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_InvalidHostHeader_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("GET / HTTP/1.1\r\nHost: bad host\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_Http10DuplicateHostHeaders_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("GET / HTTP/1.0\r\nHost: example.com\r\nHost: other.example\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_OptionsAsteriskForm_ParsedSuccessfully()
+    {
+        const string raw = "OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        Assert.True(TryParse(raw, out var req));
+        Assert.Equal("*", req!.Path);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_GetAsteriskForm_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("GET * HTTP/1.1\r\nHost: example.com\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_ConnectAuthorityForm_ParsedSuccessfully()
+    {
+        const string raw = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        Assert.True(TryParse(raw, out var req));
+        Assert.Equal("example.com:443", req!.Path);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_ConnectWithoutPort_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("CONNECT example.com HTTP/1.1\r\nHost: example.com\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParse_ConnectOriginForm_ReturnsInvalid()
+    {
+        var req = CreateRequest();
+        var result = TryParseResult("CONNECT /tunnel HTTP/1.1\r\nHost: example.com\r\n\r\n", req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParseHeaders_TransferEncodingChunked_ClearsContentLengthMetadata()
+    {
+        const string raw =
+            "POST /upload HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Content-Length: 999\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "\r\n";
+
+        var req = CreateRequest();
+        var result = TryParseHeadersResult(raw, req, out _);
+
+        Assert.Equal(HttpParseResult.Success, result);
+        Assert.True(req.HasChunkedTransferEncoding);
+        Assert.False(req.HasContentLength);
+        Assert.False(req.HasParsedContentLength);
+        Assert.False(req.HasInvalidContentLength);
+        Assert.Equal(0, req.ContentLength);
+        req.Dispose();
+    }
+
+    [Theory]
+    [InlineData("Transfer-Encoding: gzip\r\n")]
+    [InlineData("Transfer-Encoding: chunked, gzip\r\n")]
+    [InlineData("Transfer-Encoding: gzip, chunked\r\n")]
+    [InlineData("Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n")]
+    public void TryParseHeaders_InvalidTransferEncodingShapes_ReturnInvalid(string transferEncodingHeaders)
+    {
+        var raw =
+            "POST /upload HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            transferEncodingHeaders +
+            "\r\n";
+
+        var req = CreateRequest();
+        var result = TryParseHeadersResult(raw, req, out _);
+
+        Assert.Equal(HttpParseResult.Invalid, result);
         req.Dispose();
     }
 

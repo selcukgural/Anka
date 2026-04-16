@@ -20,6 +20,17 @@ public class HttpRequestTests
         return req;
     }
 
+    private static HttpRequest ParseHeadersOrFail(string raw)
+    {
+        var bytes = Encoding.ASCII.GetBytes(raw);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new SequenceReader<byte>(seq);
+        var req = new HttpRequest();
+        var result = HttpParser.TryParseHeaders(ref reader, req);
+        Assert.Equal(HttpParseResult.Success, result);
+        return req;
+    }
+
 
     [Fact]
     public void Path_SimpleRoute_ReturnsCorrectString()
@@ -181,6 +192,67 @@ public class HttpRequestTests
         Assert.True(req.Body.IsEmpty);
         Assert.Null(req.QueryString);
         req.Dispose();
+    }
+
+    [Fact]
+    public void AbsoluteForm_RequestMetadata_IsStored()
+    {
+        using var req = ParseOrFail("GET https://example.com:443/search?q=1 HTTP/1.1\r\nHost: example.com\r\n\r\n").AsDisposable();
+        Assert.Equal(RequestTargetForm.Absolute, req.Value.RequestTargetForm);
+        Assert.Equal(AbsoluteFormScheme.Https, req.Value.AbsoluteFormScheme);
+        Assert.Equal("example.com:443", Encoding.ASCII.GetString(req.Value.AuthorityBytes));
+        Assert.Equal("/search", req.Value.Path);
+        Assert.Equal("q=1", req.Value.QueryString);
+    }
+
+    [Fact]
+    public void ConnectAuthorityForm_RequestMetadata_IsStored()
+    {
+        using var req = ParseOrFail("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n").AsDisposable();
+        Assert.Equal(RequestTargetForm.Authority, req.Value.RequestTargetForm);
+        Assert.Equal(AbsoluteFormScheme.None, req.Value.AbsoluteFormScheme);
+        Assert.Equal("example.com:443", Encoding.ASCII.GetString(req.Value.AuthorityBytes));
+        Assert.Equal("example.com:443", req.Value.Path);
+    }
+
+    [Fact]
+    public void TransferEncodingChunked_ClearsContentLengthMetadata()
+    {
+        const string raw =
+            "POST /upload HTTP/1.1\r\n" +
+            "Host: x.com\r\n" +
+            "Content-Length: 5\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "\r\n";
+
+        using var req = ParseHeadersOrFail(raw).AsDisposable();
+        Assert.True(req.Value.HasChunkedTransferEncoding);
+        Assert.False(req.Value.HasContentLength);
+        Assert.False(req.Value.HasParsedContentLength);
+        Assert.False(req.Value.HasInvalidContentLength);
+        Assert.Equal(0, req.Value.ContentLength);
+        Assert.True(req.Value.Body.IsEmpty);
+    }
+
+    [Fact]
+    public void ResetForReuse_ClearsRequestTargetAndFramingMetadata()
+    {
+        using var req = ParseOrFail("GET http://x.com/a?q=1 HTTP/1.1\r\nHost: x.com\r\n\r\n").AsDisposable();
+
+        Assert.Equal(RequestTargetForm.Absolute, req.Value.RequestTargetForm);
+        Assert.Equal(AbsoluteFormScheme.Http, req.Value.AbsoluteFormScheme);
+        Assert.False(req.Value.AuthorityBytes.IsEmpty);
+
+        req.Value.ResetForReuse();
+
+        Assert.Equal(RequestTargetForm.Origin, req.Value.RequestTargetForm);
+        Assert.Equal(AbsoluteFormScheme.None, req.Value.AbsoluteFormScheme);
+        Assert.True(req.Value.AuthorityBytes.IsEmpty);
+        Assert.False(req.Value.HasChunkedTransferEncoding);
+        Assert.False(req.Value.HasContentLength);
+        Assert.False(req.Value.HasParsedContentLength);
+        Assert.False(req.Value.HasInvalidContentLength);
+        Assert.Equal(0, req.Value.ContentLength);
     }
 }
 

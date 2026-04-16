@@ -134,12 +134,6 @@ internal sealed class Connection
                     var keepAlive = request.IsKeepAlive;
                     writer.SetSuppressResponseBody(request.Method == HttpMethod.Head);
                     
-                    if (!request.ValidateContentLengthFor411())
-                    {
-                        await writer.WriteAsync(411, keepAlive: false, cancellationToken: _cancellationToken);
-                        return;
-                    }
-                    
                     if (!request.IsRequestBodySizeWithinLimit(_serverOptions.MaxRequestBodySize))
                     {
                         await writer.WriteAsync(413, keepAlive: false, cancellationToken: _cancellationToken);
@@ -285,8 +279,8 @@ internal sealed class Connection
     /// </summary>
     /// <remarks>
     /// This structure is used to encapsulate the state of request body processing in the
-    /// connection lifecycle. It helps track the parsing position and validate the body
-    /// read operation's success or failure. The state includes information about the
+    /// connection lifecycle. It helps track the parsing position and validate the body-read
+    /// operation's success or failure. The state includes information about the
     /// parsing offset, the buffer end position, and the outcome of the read operation,
     /// which is captured using <see cref="RequestBodyReadResult"/>.
     /// </remarks>
@@ -321,7 +315,7 @@ internal sealed class Connection
     }
 
     /// <summary>
-    /// Represents the state of a buffer read operation, encapsulating the success status
+    /// Represents the state of a buffer-read operation, encapsulating the success status
     /// and positional markers within the buffer.
     /// This struct is used internally to track the outcome of data reading attempts during
     /// processing, helping manage buffer positions and signaling success or termination
@@ -345,7 +339,7 @@ internal sealed class Connection
         /// <remarks>
         /// The <c>Start</c> property indicates the index in the buffer where parsing or processing begins.
         /// This is particularly useful in operations involving partial reads or buffering,
-        /// allowing subsequent operations to determine the starting point of the unprocessed data.
+        /// allowing later operations to determine the starting point of the unprocessed data.
         /// </remarks>
         public int Start { get; } = start;
 
@@ -556,7 +550,7 @@ internal sealed class Connection
     }
 
     /// <summary>
-    /// Ensures that the <paramref name="request"/> has a body buffer with sufficient capacity to accommodate the desired length.
+    /// Ensures that the <paramref name="request"/> has a body buffer with enough capacity to accommodate the desired length.
     /// If the current buffer is too small, a larger buffer is allocated, and existing data is copied into the new buffer.
     /// </summary>
     /// <param name="request">The <see cref="HttpRequest"/> associated with the body buffer.</param>
@@ -702,13 +696,13 @@ internal sealed class Connection
     }
 
     /// <summary>
-    /// Compares two ASCII byte spans for equality, ignoring case.
+    /// Compares two ASCII byte spans for equality, ignoring a case.
     /// Returns <c>true</c> if the spans are equal in a case-insensitive manner; otherwise, <c>false</c>.
     /// </summary>
     /// <param name="a">The first ASCII <see cref="ReadOnlySpan{T}"/> to compare.</param>
     /// <param name="b">The second ASCII <see cref="ReadOnlySpan{T}"/> to compare.</param>
     /// <returns>
-    /// <c>true</c> if the spans are equal, ignoring case; otherwise, <c>false</c>.
+    /// <c>true</c> if the spans are equal, ignoring a case; otherwise, <c>false</c>.
     /// </returns>
     private static bool AsciiEqualsIgnoreCase(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
     {

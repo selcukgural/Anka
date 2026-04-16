@@ -70,6 +70,31 @@ internal static class HttpParser
         return HttpParseResult.Success;
     }
 
+    /// <summary>
+    /// Attempts to parse HTTP headers from the provided <paramref name="reader"/> sequence,
+    /// populating the supplied <paramref name="req"/> object with parsed data, and validating
+    /// against optional constraints such as the maximum request target size and header size.
+    /// </summary>
+    /// <param name="reader">
+    /// A <see cref="SequenceReader{T}"/> to read the HTTP headers from. The reader's position
+    /// is updated to reflect the consumed bytes if parsing is successful.
+    /// </param>
+    /// <param name="req">
+    /// The <see cref="HttpRequest"/> instance to populate with parsed header data.
+    /// </param>
+    /// <param name="maxRequestTargetSize">
+    /// An optional maximum size, in bytes, allowed for the request target.
+    /// If null, no size limit is enforced.
+    /// </param>
+    /// <param name="maxRequestHeadersSize">
+    /// The maximum cumulative size, in bytes, allowed for HTTP headers. If the headers
+    /// exceed this limit, parsing will terminate with a failure result.
+    /// </param>
+    /// <returns>
+    /// A <see cref="HttpParseResult"/> indicating the outcome of the parsing operation.
+    /// Returns <see cref="HttpParseResult.Success"/> if parsing is successful, or an appropriate
+    /// error code if the input is invalid or exceeds constraints.
+    /// </returns>
     internal static HttpParseResult TryParseHeaders(
         ref SequenceReader<byte> reader,
         HttpRequest req,
@@ -166,13 +191,30 @@ internal static class HttpParser
             }
         }
 
-        if (req.Version == HttpVersion.Http11 &&
-            !req.Headers.TryGetValue(HttpHeaderNames.Host, out _))
+        var hostValidationResult = ValidateHostAndRequestTargetAuthority(req);
+        if (hostValidationResult != HttpParseResult.Success)
         {
-            return HttpParseResult.MissingHostHeader;
+            return hostValidationResult;
         }
 
-        req.HasChunkedTransferEncoding = HasChunkedTransferEncoding(ref req.Headers);
+        if (!TryAnalyzeTransferEncoding(ref req.Headers, out var hasChunkedTransferEncoding))
+        {
+            return HttpParseResult.Invalid;
+        }
+
+        req.HasChunkedTransferEncoding = hasChunkedTransferEncoding;
+        if (req.HasChunkedTransferEncoding)
+        {
+            req.HasContentLength = false;
+            req.HasParsedContentLength = false;
+            req.HasInvalidContentLength = false;
+            req.ContentLength = 0;
+        }
+        else if (req.HasInvalidContentLength)
+        {
+            return HttpParseResult.Invalid;
+        }
+
         req.IsKeepAlive = ComputeKeepAlive(req.Version, ref req.Headers);
         return HttpParseResult.Success;
     }
@@ -206,7 +248,7 @@ internal static class HttpParser
         long parsed;
         if (line.IsSingleSegment)
         {
-            if (!TryParseContentLengthValue(line.FirstSpan[(int)valueStart..].Trim((byte)' '), out parsed))
+            if (!TryParseContentLengthValue(line.FirstSpan[valueStart..].Trim((byte)' '), out parsed))
             {
                 request.HasInvalidContentLength = true;
                 return HttpParseResult.Success;
@@ -248,7 +290,7 @@ internal static class HttpParser
     /// validating that it represents a valid, non-negative long integer encoded in UTF-8.
     /// </summary>
     /// <param name="value">The span of bytes representing the Content-Length value in UTF-8 encoding.</param>
-    /// <param name="parsed">When this method returns, contains the parsed Content-Length value if the parse was successful. Otherwise, contains 0.</param>
+    /// <param name="parsed">When this method returns, contains the parsed Content-Length value if the parse was successful. Otherwise, it contains 0.</param>
     /// <returns>
     /// <c>true</c> if the parse operation was successful, the entire span was consumed, and the value represents a valid non-negative number; otherwise, <c>false</c>.
     /// </returns>
@@ -343,15 +385,26 @@ internal static class HttpParser
 
             req.Version = version;
 
-            // Split path / query
-            var q = rawPath.IndexOf((byte)'?');
-            var pathPart = q >= 0 ? rawPath[..q] : rawPath;
-            var queryPart = q >= 0 ? rawPath[(q + 1)..] : ReadOnlySpan<byte>.Empty;
+            if (!TryParseRequestTarget(rawPath, req.Method, out var form, out var scheme, out var authorityPart, out var pathPart, out var queryPart))
+            {
+                return HttpParseResult.Invalid;
+            }
 
-            if (pathPart.Length > ushort.MaxValue || queryPart.Length > ushort.MaxValue)
+            if (pathPart.Length > ushort.MaxValue || queryPart.Length > ushort.MaxValue || authorityPart.Length > ushort.MaxValue)
             {
                 return HttpParseResult.RequestTargetTooLong;
             }
+
+            req.RequestTargetForm = form;
+            req.AbsoluteFormScheme = scheme;
+
+            var authorityOffset = (ushort)writePos;
+            if (!authorityPart.IsEmpty)
+            {
+                authorityPart.CopyTo(buf.AsSpan(writePos));
+                writePos += authorityPart.Length;
+            }
+            req.SetAuthority(authorityOffset, (ushort)authorityPart.Length);
 
             // Copy into shared buffer
             var pathOffset = (ushort)writePos;
@@ -427,6 +480,469 @@ internal static class HttpParser
     }
 
     /// <summary>
+    /// Attempts to parse the provided <paramref name="rawTarget"/> into components of an HTTP request target,
+    /// determining its format based on the given <paramref name="method"/> and extracting the corresponding parts.
+    /// </summary>
+    /// <param name="rawTarget">The raw sequence of bytes representing the HTTP request target.</param>
+    /// <param name="method">The HTTP method being used in the request, which affects how the target is interpreted.</param>
+    /// <param name="form">The determined form of the request target, such as origin-form or absolute-form.</param>
+    /// <param name="scheme">The scheme of the request target when in absolute-form.</param>
+    /// <param name="authorityPart">The authority component of the target when applicable.</param>
+    /// <param name="pathPart">The path component of the target, including the resource being requested.</param>
+    /// <param name="queryPart">The query component of the target, representing any parameters included in the request.</param>
+    /// <returns>
+    /// Returns <c>true</c> if the parsing operation was successful and the target was correctly interpreted;
+    /// otherwise, returns <c>false</c> if the target could not be parsed.
+    /// </returns>
+    private static bool TryParseRequestTarget(
+        ReadOnlySpan<byte> rawTarget,
+        HttpMethod method,
+        out RequestTargetForm form,
+        out AbsoluteFormScheme scheme,
+        out ReadOnlySpan<byte> authorityPart,
+        out ReadOnlySpan<byte> pathPart,
+        out ReadOnlySpan<byte> queryPart)
+    {
+        form = RequestTargetForm.Origin;
+        scheme = AbsoluteFormScheme.None;
+        authorityPart = default;
+        pathPart = default;
+        queryPart = default;
+
+        if (rawTarget.SequenceEqual("*"u8))
+        {
+            if (method != HttpMethod.Options)
+            {
+                return false;
+            }
+
+            form = RequestTargetForm.Asterisk;
+            pathPart = rawTarget;
+            queryPart = ReadOnlySpan<byte>.Empty;
+            return true;
+        }
+
+        if (method == HttpMethod.Connect)
+        {
+            if (!TryParseAuthority(rawTarget, requirePort: true, out _))
+            {
+                return false;
+            }
+
+            form = RequestTargetForm.Authority;
+            authorityPart = rawTarget;
+            pathPart = rawTarget;
+            queryPart = ReadOnlySpan<byte>.Empty;
+            return true;
+        }
+
+        if (TryParseAbsoluteFormTarget(rawTarget, out scheme, out authorityPart, out pathPart, out queryPart))
+        {
+            form = RequestTargetForm.Absolute;
+            return true;
+        }
+
+        if (rawTarget.IsEmpty || rawTarget[0] != (byte)'/')
+        {
+            return false;
+        }
+
+        var q = rawTarget.IndexOf((byte)'?');
+        pathPart = q >= 0 ? rawTarget[..q] : rawTarget;
+        queryPart = q >= 0 ? rawTarget[(q + 1)..] : ReadOnlySpan<byte>.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Attempts to parse an absolute-form request target from the provided <paramref name="rawTarget"/> byte sequence.
+    /// Extracts the scheme, authority part, path part, and query part of the target if valid, and determines the scheme type.
+    /// </summary>
+    /// <param name="rawTarget">
+    /// A read-only span of bytes representing the absolute-form request target to parse.
+    /// </param>
+    /// <param name="scheme">
+    /// When this method returns, contains the identified scheme type (e.g., HTTP, HTTPS, or Other) if parsing is successful; otherwise, contains <c>AbsoluteFormScheme.None</c>.
+    /// </param>
+    /// <param name="authorityPart">
+    /// When this method returns, contains the extracted authority part of the request target if parsing is successful; otherwise, contains a default, empty span.
+    /// </param>
+    /// <param name="pathPart">
+    /// When this method returns, contains the extracted path part of the request target if parsing is successful; otherwise, contains a default, empty span.
+    /// </param>
+    /// <param name="queryPart">
+    /// When this method returns, contains the extracted query part of the request target if parsing is successful; otherwise, contains a default, empty span.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> if the absolute-form request target was successfully parsed; otherwise, <c>false</c>.
+    /// </returns>
+    private static bool TryParseAbsoluteFormTarget(
+        ReadOnlySpan<byte> rawTarget,
+        out AbsoluteFormScheme scheme,
+        out ReadOnlySpan<byte> authorityPart,
+        out ReadOnlySpan<byte> pathPart,
+        out ReadOnlySpan<byte> queryPart)
+    {
+        scheme = AbsoluteFormScheme.None;
+        authorityPart = default;
+        pathPart = default;
+        queryPart = default;
+
+        var schemeSeparator = rawTarget.IndexOf("://"u8);
+        if (schemeSeparator <= 0)
+        {
+            return false;
+        }
+
+        var schemePart = rawTarget[..schemeSeparator];
+        scheme = schemePart.SequenceEqual("http"u8)
+            ? AbsoluteFormScheme.Http
+            : schemePart.SequenceEqual("https"u8)
+                ? AbsoluteFormScheme.Https
+                : AbsoluteFormScheme.Other;
+
+        var authorityStart = schemeSeparator + 3;
+        if (authorityStart >= rawTarget.Length)
+        {
+            return false;
+        }
+
+        var remainder = rawTarget[authorityStart..];
+        var delimiterIndex = remainder.IndexOfAny((byte)'/', (byte)'?');
+        if (delimiterIndex < 0)
+        {
+            authorityPart = remainder;
+            pathPart = "/"u8;
+            queryPart = ReadOnlySpan<byte>.Empty;
+        }
+        else
+        {
+            authorityPart = remainder[..delimiterIndex];
+            var afterAuthority = remainder[delimiterIndex..];
+            if (afterAuthority[0] == (byte)'?')
+            {
+                pathPart = "/"u8;
+                queryPart = afterAuthority[1..];
+            }
+            else
+            {
+                var q = afterAuthority.IndexOf((byte)'?');
+                pathPart = q >= 0 ? afterAuthority[..q] : afterAuthority;
+                queryPart = q >= 0 ? afterAuthority[(q + 1)..] : ReadOnlySpan<byte>.Empty;
+            }
+        }
+
+        return !authorityPart.IsEmpty && TryParseAuthority(authorityPart, requirePort: false, out _);
+    }
+
+    /// <summary>
+    /// Validates the 'Host' header and the authority portion of the request target
+    /// in an HTTP request. Ensures the request conforms to expected HTTP semantics
+    /// regarding these components.
+    /// </summary>
+    /// <param name="request">The HTTP request containing headers and target information to validate.</param>
+    /// <returns>
+    /// Returns a <see cref="HttpParseResult"/> indicating the outcome:
+    /// <list type="bullet">
+    /// <item><description><c>Success</c> if validation passes.</description></item>
+    /// <item><description><c>MissingHostHeader</c> if the 'Host' header is absent in an HTTP/1.1 request.</description></item>
+    /// <item><description><c>Invalid</c> if the 'Host' header value or target authority is malformed or inconsistent.</description></item>
+    /// </list>
+    /// </returns>
+    private static HttpParseResult ValidateHostAndRequestTargetAuthority(HttpRequest request)
+    {
+        if (!request.Headers.TryGetAllValues(HttpHeaderNames.Host, out var hostValues))
+        {
+            return request.Version == HttpVersion.Http11
+                ? HttpParseResult.MissingHostHeader
+                : HttpParseResult.Success;
+        }
+
+        ReadOnlySpan<byte> hostValue = default;
+        var count = 0;
+        foreach (var value in hostValues)
+        {
+            hostValue = value;
+            count++;
+            if (count > 1)
+            {
+                return HttpParseResult.Invalid;
+            }
+        }
+
+        if (!TryParseAuthority(hostValue, requirePort: false, out _))
+        {
+            return HttpParseResult.Invalid;
+        }
+
+        if (request.RequestTargetForm == RequestTargetForm.Absolute &&
+            !AuthoritiesEquivalent(request.AuthorityBytes, request.AbsoluteFormScheme, hostValue))
+        {
+            return HttpParseResult.Invalid;
+        }
+
+        return HttpParseResult.Success;
+    }
+
+    /// <summary>
+    /// Compares two authorities, specified by the given byte sequences, to determine if they are equivalent.
+    /// The comparison considers the host and port components of the authorities, with default ports
+    /// inferred based on the provided <paramref name="scheme"/>.
+    /// </summary>
+    /// <param name="left">The first byte sequence representing an authority to compare.</param>
+    /// <param name="scheme">The scheme that determines the default port for comparison when no explicit port is specified.</param>
+    /// <param name="right">The second byte sequence representing an authority to compare.</param>
+    /// <returns>
+    /// <c>true</c> if the authorities are equivalent, based on case-insensitive host comparison
+    /// and port equality; otherwise, <c>false</c>.
+    /// </returns>
+    private static bool AuthoritiesEquivalent(ReadOnlySpan<byte> left, AbsoluteFormScheme scheme, ReadOnlySpan<byte> right)
+    {
+        if (!TryParseAuthority(left, requirePort: false, out var leftParts) ||
+            !TryParseAuthority(right, requirePort: false, out var rightParts))
+        {
+            return false;
+        }
+
+        if (!AsciiEqualsIgnoreCase(leftParts.Host, rightParts.Host))
+        {
+            return false;
+        }
+
+        var leftPort = leftParts.HasPort ? leftParts.Port : GetDefaultPort(scheme);
+        var rightPort = rightParts.HasPort ? rightParts.Port : GetDefaultPort(scheme);
+        return leftPort == rightPort;
+    }
+
+    /// <summary>
+    /// Retrieves the default port number associated with the specified <paramref name="scheme"/>.
+    /// </summary>
+    /// <param name="scheme">The scheme for which the default port is to be determined.
+    /// Typically, this will be either <see cref="AbsoluteFormScheme.Http"/> or <see cref="AbsoluteFormScheme.Https"/>.</param>
+    /// <returns>The default port number for the specified scheme, or <c>null</c> if the scheme does not have a default port.</returns>
+    private static int? GetDefaultPort(AbsoluteFormScheme scheme) => scheme switch
+    {
+        AbsoluteFormScheme.Http => 80,
+        AbsoluteFormScheme.Https => 443,
+        _ => null
+    };
+
+    /// <summary>
+    /// Parses the authority component of a URI from the given byte sequence and determines its validity.
+    /// </summary>
+    /// <param name="value">
+    /// The byte sequence representing the authority portion of the URI. This may include the host and optionally a port.
+    /// </param>
+    /// <param name="requirePort">
+    /// Indicates whether a port number is required to be present in the authority component.
+    /// </param>
+    /// <param name="parts">
+    /// When this method returns, contains the parsed authority components, including the host,
+    /// a flag indicating the presence of a port, and the port value, if applicable.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> if the authority component is successfully parsed and valid; otherwise, <c>false</c>.
+    /// </returns>
+    private static bool TryParseAuthority(ReadOnlySpan<byte> value, bool requirePort, out AuthorityParts parts)
+    {
+        parts = default;
+        if (value.IsEmpty)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> host;
+        var hasPort = false;
+        var port = 0;
+
+        if (value[0] == (byte)'[')
+        {
+            var endBracket = value.IndexOf((byte)']');
+            if (endBracket <= 1)
+            {
+                return false;
+            }
+
+            host = value[1..endBracket];
+            var tail = value[(endBracket + 1)..];
+            if (!tail.IsEmpty)
+            {
+                if (tail[0] != (byte)':')
+                {
+                    return false;
+                }
+
+                if (!TryParsePort(tail[1..], out port))
+                {
+                    return false;
+                }
+
+                hasPort = true;
+            }
+
+            if (!TryValidateIpv6Literal(host))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            var colonIndex = value.LastIndexOf((byte)':');
+            if (colonIndex >= 0)
+            {
+                if (value[..colonIndex].IndexOf((byte)':') >= 0)
+                {
+                    return false;
+                }
+
+                host = value[..colonIndex];
+                if (!TryParsePort(value[(colonIndex + 1)..], out port))
+                {
+                    return false;
+                }
+
+                hasPort = true;
+            }
+            else
+            {
+                host = value;
+            }
+
+            if (!TryValidateRegName(host))
+            {
+                return false;
+            }
+        }
+
+        if (requirePort && !hasPort)
+        {
+            return false;
+        }
+
+        parts = new AuthorityParts(host, hasPort, port);
+        return true;
+    }
+
+    /// <summary>
+    /// Attempts to parse a port number from the specified read-only span of bytes.
+    /// </summary>
+    /// <param name="value">A read-only span of bytes representing the port number to parse.</param>
+    /// <param name="port">
+    /// When this method returns, contains the parsed port number if the conversion succeeded,
+    /// or 0 if the conversion failed.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> if the entire span represents a valid port number within the range 0 to 65535;
+    /// otherwise, <c>false</c>.
+    /// </returns>
+    private static bool TryParsePort(ReadOnlySpan<byte> value, out int port)
+    {
+        port = 0;
+        if (value.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (var b in value)
+        {
+            if ((uint)(b - '0') > 9)
+            {
+                return false;
+            }
+
+            port = (port * 10) + (b - '0');
+            if (port > 65535)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Validates whether the specified IPv6 literal is properly formatted.
+    /// </summary>
+    /// <param name="host">The span of bytes representing the IPv6 literal to validate.</param>
+    /// <returns>
+    /// <c>true</c> if the provided span represents a valid IPv6 literal;
+    /// otherwise, <c>false</c>.
+    /// </returns>
+    private static bool TryValidateIpv6Literal(ReadOnlySpan<byte> host)
+    {
+        if (host.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (var b in host)
+        {
+            if ((uint)(b - '0') <= 9 ||
+                (uint)((b | 0x20) - 'a') <= 'f' - 'a' ||
+                b is (byte)':' or (byte)'.')
+            {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Validates whether the provided host name complies with the "reg-name" format
+    /// as defined in RFC 3986. The validation ensures that the host name consists
+    /// of valid characters, does not begin or end with a period, and adheres to
+    /// the allowed structure for registered names.
+    /// </summary>
+    /// <param name="host">
+    /// A span of bytes representing the host name to be validated.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> if the host name is valid, according to the "reg-name"
+    /// format; otherwise, <see langword="false"/>.
+    /// </returns>
+    private static bool TryValidateRegName(ReadOnlySpan<byte> host)
+    {
+        if (host.IsEmpty || host[0] == (byte)'.' || host[^1] == (byte)'.')
+        {
+            return false;
+        }
+
+        foreach (var b in host)
+        {
+            if ((uint)((b | 0x20) - 'a') <= 'z' - 'a' ||
+                (uint)(b - '0') <= 9 ||
+                b is (byte)'-' or (byte)'.')
+            {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Represents the essential parts of an authority segment within a URI,
+    /// encapsulating the host, port, and related details during parsing operations.
+    /// The authority segment typically consists of a host (e.g., domain or IP address)
+    /// and may optionally include a port. This structure is designed to handle both
+    /// the presence and absence of port specifications, enabling efficient parsing and
+    /// representation of URI authority parts in scenarios such as HTTP request processing.
+    /// This structure is immutable and optimized for performance to support scenarios where
+    /// a high-throughput, allocation-free approach is required. It can store the raw host
+    /// span directly as a <see cref="ReadOnlySpan{T}"/>, avoiding unnecessary allocations.
+    /// </summary>
+    private readonly ref struct AuthorityParts(ReadOnlySpan<byte> host, bool hasPort, int port)
+    {
+        public ReadOnlySpan<byte> Host { get; } = host;
+        public bool HasPort { get; } = hasPort;
+        public int Port { get; } = port;
+    }
+
+    /// <summary>
     /// Determines whether the HTTP connection should use a persistent connection (Keep-Alive)
     /// based on the HTTP version and the connection header value.
     /// </summary>
@@ -457,37 +973,52 @@ internal static class HttpParser
     }
 
     /// <summary>
-    /// Determines whether the provided <paramref name="headers"/> indicate that chunked transfer encoding is being used.
+    /// Analyzes the specified HTTP headers to determine if chunked transfer encoding is indicated.
     /// </summary>
-    /// <param name="headers">The HTTP headers to inspect for the "transfer-encoding" header and its values.</param>
+    /// <param name="headers">The HTTP headers to analyze for the presence of the "transfer-encoding" header and its associated values.</param>
+    /// <param name="hasChunkedTransferEncoding">
+    /// When this method returns, contains <c>true</c> if the "transfer-encoding" header specifies "chunked",
+    /// ignoring a case. Otherwise, contains <c>false</c>.
+    /// </param>
     /// <returns>
-    /// <c>true</c> if the "transfer-encoding" header contains a value of "chunked", ignoring case; otherwise, <c>false</c>.
+    /// <c>true</c> if the analysis of the "transfer-encoding" header was successfully performed; otherwise, <c>false</c>.
     /// </returns>
-    private static bool HasChunkedTransferEncoding(ref HttpHeaders headers)
+    private static bool TryAnalyzeTransferEncoding(ref HttpHeaders headers, out bool hasChunkedTransferEncoding)
     {
-        if (!headers.TryGetValue(HttpHeaderNames.TransferEncoding, out var value))
+        hasChunkedTransferEncoding = false;
+
+        if (!headers.TryGetAllValues(HttpHeaderNames.TransferEncoding, out var values))
         {
-            return false;
+            return true;
         }
 
-        while (!value.IsEmpty)
+        var sawChunked = false;
+
+        foreach (var value in values)
         {
-            var comma = value.IndexOf((byte)',');
-            var token = comma >= 0 ? value[..comma] : value;
-            if (AsciiEqualsIgnoreCase(token.Trim((byte)' '), "chunked"u8))
-            {
-                return true;
-            }
+            var remaining = value;
 
-            if (comma < 0)
+            while (!remaining.IsEmpty)
             {
-                break;
-            }
+                var comma = remaining.IndexOf((byte)',');
+                var token = (comma >= 0 ? remaining[..comma] : remaining).Trim((byte)' ');
+                if (token.IsEmpty || sawChunked || !AsciiEqualsIgnoreCase(token, "chunked"u8))
+                {
+                    return false;
+                }
 
-            value = value[(comma + 1)..];
+                sawChunked = true;
+                if (comma < 0)
+                {
+                    break;
+                }
+
+                remaining = remaining[(comma + 1)..];
+            }
         }
 
-        return false;
+        hasChunkedTransferEncoding = sawChunked;
+        return true;
     }
 
 

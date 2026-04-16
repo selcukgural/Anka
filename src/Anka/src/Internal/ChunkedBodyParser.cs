@@ -33,9 +33,9 @@ internal static class ChunkedBodyParser
     /// <returns>
     /// A <see cref="ChunkedBodyParseResult"/> value indicating the result of the chunk size parsing:
     /// <list type="bullet">
-    /// <item><term>Success</term>: The chunk size was successfully parsed.</item>
-    /// <item><term>Incomplete</term>: The buffer does not contain enough data to determine the chunk size.</item>
-    /// <item><term>Invalid</term>: The chunk size could not be parsed due to invalid format or overflow.</item>
+    /// <item><term>Success</term>The chunk size was successfully parsed.</item>
+    /// <item><term>Incomplete</term>The buffer does not contain enough data to determine the chunk size.</item>
+    /// <item><term>Invalid</term>The chunk size could not be parsed due to invalid format or overflow.</item>
     /// </list>
     /// </returns>
     public static ChunkedBodyParseResult TryReadChunkSize(ReadOnlySpan<byte> buffer, out int chunkSize, out int consumed)

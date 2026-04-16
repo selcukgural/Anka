@@ -62,6 +62,7 @@ public sealed class HttpRequest
     /// of an HTTP request without additional memory allocations.
     /// </summary>
     private ushort  _queryOffset, _queryLength;
+    private ushort _authorityOffset, _authorityLength;
 
     /// <summary>
     /// Gets the path of the HTTP request as a read-only span of bytes, representing a slice of the internal buffer.
@@ -76,6 +77,9 @@ public sealed class HttpRequest
     /// </summary>
     public ReadOnlySpan<byte> QueryBytes
         => Buffer.AsSpan(_queryOffset, _queryLength);
+
+    internal ReadOnlySpan<byte> AuthorityBytes
+        => Buffer.AsSpan(_authorityOffset, _authorityLength);
 
     /// <summary>
     /// Returns true when the request path exactly matches <paramref name="path"/>.
@@ -140,6 +144,8 @@ public sealed class HttpRequest
     /// Indicates that a valid numeric Content-Length has been parsed.
     /// </summary>
     internal bool HasParsedContentLength { get; set; }
+    internal RequestTargetForm RequestTargetForm { get; set; }
+    internal AbsoluteFormScheme AbsoluteFormScheme { get; set; }
 
     /// <summary>
     /// Sets the path offset and length for the <see cref="HttpRequest"/> instance.
@@ -166,6 +172,12 @@ public sealed class HttpRequest
         _queryOffset = offset;
         _queryLength = length;
         _queryStr    = null;
+    }
+
+    internal void SetAuthority(ushort offset, ushort length)
+    {
+        _authorityOffset = offset;
+        _authorityLength = length;
     }
 
 
@@ -195,6 +207,10 @@ public sealed class HttpRequest
         _pathLength  = 0;
         _queryOffset = 0;
         _queryLength = 0;
+        _authorityOffset = 0;
+        _authorityLength = 0;
+        RequestTargetForm = RequestTargetForm.Origin;
+        AbsoluteFormScheme = AbsoluteFormScheme.None;
         Headers      = default;
     }
 

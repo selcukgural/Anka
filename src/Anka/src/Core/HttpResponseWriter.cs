@@ -134,7 +134,7 @@ public sealed class HttpResponseWriter : IDisposable
                                 ReadOnlySpan<HttpHeader> extraHeaders, CancellationToken cancellationToken = default)
     {
         const int headerEstimate = 512;
-        var suppressBody = _suppressResponseBody || statusCode == 304;
+        var suppressBody = _suppressResponseBody || IsBodyForbiddenStatus(statusCode);
         var smallBodyThreshold = !suppressBody && body.Length <= 4096 ? body.Length : 0;
 
         // Account for default + extra headers: "name: value\r\n" per entry
@@ -452,6 +452,7 @@ public sealed class HttpResponseWriter : IDisposable
     {
         var span = buf.AsSpan();
         var pos = 0;
+        var forbidBodyHeaders = IsBodyForbiddenStatus(statusCode);
 
         // Fast path: 200 OK is overwhelmingly common — single copy for status + server.
         if (statusCode == 200)
@@ -465,12 +466,15 @@ public sealed class HttpResponseWriter : IDisposable
             WriteLiteral("Server: Anka\r\n"u8, span, ref pos);
         }
 
-        // Content-Length
-        WriteLiteral(ContentLengthName, span, ref pos);
-        Utf8Formatter.TryFormat(body.Length, span[pos..], out var written);
-        pos += written;
-        span[pos++] = (byte)'\r';
-        span[pos++] = (byte)'\n';
+        if (!forbidBodyHeaders)
+        {
+            // Content-Length
+            WriteLiteral(ContentLengthName, span, ref pos);
+            Utf8Formatter.TryFormat(body.Length, span[pos..], out var written);
+            pos += written;
+            span[pos++] = (byte)'\r';
+            span[pos++] = (byte)'\n';
+        }
 
         // Date (TFB General Requirement #5) — refreshed at most once per second
         var dateLine = GetCurrentDateLine();
@@ -482,7 +486,7 @@ public sealed class HttpResponseWriter : IDisposable
         connHeader.CopyTo(span[pos..]);
         pos += connHeader.Length;
 
-        if (!contentType.IsEmpty)
+        if (!forbidBodyHeaders && !contentType.IsEmpty)
         {
             WriteLiteral(ContentTypeName, span, ref pos);
             contentType.Span.CopyTo(span[pos..]);
@@ -608,4 +612,7 @@ public sealed class HttpResponseWriter : IDisposable
         505 => "HTTP Version Not Supported"u8,
         _   => "Unknown"u8,
     };
+
+    private static bool IsBodyForbiddenStatus(int statusCode) =>
+        statusCode is >= 100 and < 200 or 204 or 304;
 }

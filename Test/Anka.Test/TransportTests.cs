@@ -125,6 +125,90 @@ public class TransportTests
     }
 
     [Fact]
+    public async Task ChunkedTransferEncoding_WithContentLength_IgnoresContentLengthForFraming()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (request, response, cancellationToken) =>
+                response.WriteAsync(200, request.Body, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        const string request =
+            "POST /echo HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "Content-Length: 999\r\n" +
+            "Connection: close\r\n" +
+            "\r\n" +
+            "5\r\nhello\r\n0\r\n\r\n";
+
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), timeout.Token);
+
+        var response = await reader.ReadResponseAsync(timeout.Token);
+
+        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.EndsWith("hello", response, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnsupportedTransferEncoding_ReturnsBadRequest()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, response, cancellationToken) =>
+                response.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: cancellationToken));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        const string request =
+            "POST /echo HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Transfer-Encoding: gzip\r\n" +
+            "Connection: close\r\n\r\n";
+
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), timeout.Token);
+
+        var response = await reader.ReadResponseAsync(timeout.Token);
+
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
+        Assert.Contains("Connection: close", response);
+    }
+
+    [Fact]
+    public async Task TransferEncoding_WithChunkedNotFinal_ReturnsBadRequest()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, response, cancellationToken) =>
+                response.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: cancellationToken));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        const string request =
+            "POST /echo HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Transfer-Encoding: chunked, gzip\r\n" +
+            "Connection: close\r\n\r\n";
+
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), timeout.Token);
+
+        var response = await reader.ReadResponseAsync(timeout.Token);
+
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
+        Assert.Contains("Connection: close", response);
+    }
+
+    [Fact]
     public async Task Expect100Continue_SendsInterimResponseBeforeReadingBody()
     {
         await using var server = await TestServer.StartAsync(
@@ -308,7 +392,38 @@ public class TransportTests
         await Task.Delay(100, timeout.Token);
 
         Assert.Contains("HTTP/1.1 304 Not Modified", responseHeaders);
-        Assert.Contains("Content-Length: 2", responseHeaders);
+        Assert.DoesNotContain("Content-Length:", responseHeaders, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content-Type:", responseHeaders, StringComparison.Ordinal);
+        Assert.False(reader.HasBufferedData);
+        Assert.False(stream.DataAvailable);
+    }
+
+    [Fact]
+    public async Task NoContentResponse_OmitsBodyAndBodyHeaders()
+    {
+        await using var server = await TestServer.StartAsync(
+            static (_, response, cancellationToken) =>
+                response.WriteAsync(204, OkBody, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, server.Port);
+        await using var stream = client.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reader = new HttpResponseReader(stream);
+
+        const string request =
+            "GET / HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: close\r\n\r\n";
+
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), timeout.Token);
+
+        var responseHeaders = await reader.ReadHeadersOnlyAsync(timeout.Token);
+        await Task.Delay(100, timeout.Token);
+
+        Assert.Contains("HTTP/1.1 204 No Content", responseHeaders);
+        Assert.DoesNotContain("Content-Length:", responseHeaders, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content-Type:", responseHeaders, StringComparison.Ordinal);
         Assert.False(reader.HasBufferedData);
         Assert.False(stream.DataAvailable);
     }
