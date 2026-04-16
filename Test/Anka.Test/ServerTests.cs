@@ -138,6 +138,20 @@ public class ServerTests
         Assert.Throws<AnkaOutOfRangeException>(() => options.ReadTimeout = TimeSpan.FromMilliseconds(-1));
     }
 
+    [Fact]
+    public void ServerOptions_ReadTimeout_ZeroAndPositive_AreAccepted()
+    {
+        var options = new ServerOptions
+        {
+            ReadTimeout = TimeSpan.Zero
+        };
+
+        Assert.Equal(TimeSpan.Zero, options.ReadTimeout);
+
+        options.ReadTimeout = TimeSpan.FromSeconds(5);
+        Assert.Equal(TimeSpan.FromSeconds(5), options.ReadTimeout);
+    }
+
     private static int GetFreePort()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);

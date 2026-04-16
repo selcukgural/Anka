@@ -86,6 +86,44 @@ internal static class ChunkedBodyParser
     }
 
     /// <summary>
+    /// Attempts to consume the chunk data from the provided buffer, verifying its integrity
+    /// and ensuring it is properly terminated as per the chunked transfer encoding in HTTP messages.
+    /// </summary>
+    /// <param name="buffer">
+    /// The input buffer to process, containing the chunk data followed by the CRLF terminator.
+    /// </param>
+    /// <param name="chunkSize">
+    /// The size of the chunk data to be consumed, not including the CRLF terminator.
+    /// </param>
+    /// <param name="consumed">
+    /// When the method returns, contains the total number of bytes consumed
+    /// from the <paramref name="buffer"/> if the operation is successful;
+    /// otherwise, zero.
+    /// </param>
+    /// <returns>
+    /// A <see cref="ChunkedBodyParseResult"/> value indicating the result of the chunk data consumption:
+    /// Success: The chunk data was successfully consumed.
+    /// Incomplete: The buffer does not contain enough data to consume the entire chunk and its terminator.
+    /// Invalid: The chunk data or its terminator is not in the expected format.
+    /// </returns>
+    public static ChunkedBodyParseResult TryConsumeChunkData(ReadOnlySpan<byte> buffer, int chunkSize, out int consumed)
+    {
+        consumed = 0;
+        if (buffer.Length < chunkSize + 2)
+        {
+            return ChunkedBodyParseResult.Incomplete;
+        }
+
+        if (buffer[chunkSize] != (byte)'\r' || buffer[chunkSize + 1] != (byte)'\n')
+        {
+            return ChunkedBodyParseResult.Invalid;
+        }
+
+        consumed = chunkSize + 2;
+        return ChunkedBodyParseResult.Success;
+    }
+
+    /// <summary>
     /// Attempts to consume the trailers from the provided buffer, as defined in the chunked transfer encoding
     /// for HTTP messages. Trailers are additional metadata fields at the end of a chunked body.
     /// </summary>

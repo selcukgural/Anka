@@ -154,4 +154,30 @@ public class HttpHeadersTests
 
         Assert.Equal(["a=1", "b=2", "c=3"], collected);
     }
+
+    [Fact]
+    public void TryGetAllValues_SingleHeader_ReturnsSingleValue()
+    {
+        var headers = CreateHeaders();
+        headers.Add("ETag"u8, "\"abc\""u8);
+
+        Assert.True(headers.TryGetAllValues("etag"u8, out var values));
+
+        var collected = new List<string>();
+        foreach (var value in values)
+        {
+            collected.Add(System.Text.Encoding.ASCII.GetString(value));
+        }
+
+        Assert.Equal(["\"abc\""], collected);
+    }
+
+    [Fact]
+    public void TryGetAllValues_NotFound_ReturnsFalse()
+    {
+        var headers = CreateHeaders();
+        headers.Add("Host"u8, "example.com"u8);
+
+        Assert.False(headers.TryGetAllValues("set-cookie"u8, out _));
+    }
 }

@@ -44,6 +44,22 @@ public class HttpParserTests
         req.Dispose();
         return false;
     }
+
+    private static HttpParseResult TryParseHeadersResult(
+        string raw,
+        HttpRequest request,
+        out int consumed,
+        int? maxRequestTargetSize = null,
+        int maxRequestHeadersSize = 8 * 1024)
+    {
+        var bytes = Encoding.ASCII.GetBytes(raw);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new SequenceReader<byte>(seq);
+        request.ResetForReuse();
+        var result = HttpParser.TryParseHeaders(ref reader, request, maxRequestTargetSize, maxRequestHeadersSize);
+        consumed = result == HttpParseResult.Success ? (int)reader.Consumed : 0;
+        return result;
+    }
     
     [Fact]
     public void TryParse_SimpleGet_ReturnsRequest()
@@ -404,6 +420,47 @@ public class HttpParserTests
         Assert.True(TryParse(raw, out var req));
         Assert.Equal(body, Encoding.ASCII.GetString(req!.Body.Span));
         req.Return();
+    }
+
+    [Fact]
+    public void TryParseHeaders_ContentLengthBodyIncomplete_ReturnsSuccessAndStopsAtHeaderEnd()
+    {
+        const string raw =
+            "POST /upload HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Content-Length: 10\r\n" +
+            "\r\n" +
+            "hello";
+
+        var req = CreateRequest();
+        var result = TryParseHeadersResult(raw, req, out var consumed);
+
+        Assert.Equal(HttpParseResult.Success, result);
+        Assert.Equal("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\n\r\n".Length, consumed);
+        Assert.True(req.HasContentLength);
+        Assert.Equal(10, req.ContentLength);
+        Assert.True(req.Body.IsEmpty);
+        req.Dispose();
+    }
+
+    [Fact]
+    public void TryParseHeaders_ChunkedTransferEncoding_SetsChunkedFlagWithoutReadingBody()
+    {
+        const string raw =
+            "POST /upload HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "\r\n" +
+            "5\r\nhello\r\n0\r\n\r\n";
+
+        var req = CreateRequest();
+        var result = TryParseHeadersResult(raw, req, out var consumed);
+
+        Assert.Equal(HttpParseResult.Success, result);
+        Assert.Equal("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n".Length, consumed);
+        Assert.True(req.HasChunkedTransferEncoding);
+        Assert.True(req.Body.IsEmpty);
+        req.Dispose();
     }
 
     [Fact]
