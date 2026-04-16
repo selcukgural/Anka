@@ -17,6 +17,11 @@ public class HttpParserBenchmarks
     private byte[] _getWithHeaders   = null!;
     private byte[] _postSmallBody    = null!;
     private byte[] _postLargeBody    = null!;
+    private byte[] _absoluteFormGet  = null!;
+    private byte[] _absoluteFormWithDefaultPort = null!;
+    private byte[] _connectAuthorityForm = null!;
+    private byte[] _chunkedHeaders = null!;
+    private byte[] _chunkedHeadersWithContentLength = null!;
 
     // Reusable request instance — mimics connection-level reuse.
     private HttpRequest _req = null!;
@@ -59,6 +64,39 @@ public class HttpParserBenchmarks
             $"Content-Length: {largeBody.Length}\r\n" +
             $"\r\n" +
             largeBody);
+
+        _absoluteFormGet = Encode(
+            "GET http://example.com/search?q=benchmark HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: keep-alive\r\n" +
+            "\r\n");
+
+        _absoluteFormWithDefaultPort = Encode(
+            "GET https://example.com:443/search?q=benchmark HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: keep-alive\r\n" +
+            "\r\n");
+
+        _connectAuthorityForm = Encode(
+            "CONNECT example.com:443 HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Connection: keep-alive\r\n" +
+            "\r\n");
+
+        _chunkedHeaders = Encode(
+            "POST /chunked HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "Connection: keep-alive\r\n" +
+            "\r\n");
+
+        _chunkedHeadersWithContentLength = Encode(
+            "POST /chunked HTTP/1.1\r\n" +
+            "Host: example.com\r\n" +
+            "Content-Length: 999\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "Connection: keep-alive\r\n" +
+            "\r\n");
     }
 
     // ── Benchmarks ────────────────────────────────────────────────────────────
@@ -98,6 +136,56 @@ public class HttpParserBenchmarks
     public bool PostWithLargeBody()
     {
         var seq    = new ReadOnlySequence<byte>(_postLargeBody);
+        var reader = new SequenceReader<byte>(seq);
+        _req.ResetForReuse();
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
+    }
+
+    /// <summary>GET in absolute-form — exercises URI normalization and authority validation.</summary>
+    [Benchmark]
+    public bool AbsoluteFormGet()
+    {
+        var seq = new ReadOnlySequence<byte>(_absoluteFormGet);
+        var reader = new SequenceReader<byte>(seq);
+        _req.ResetForReuse();
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
+    }
+
+    /// <summary>absolute-form with explicit default port — exercises Host/authority equivalence logic.</summary>
+    [Benchmark]
+    public bool AbsoluteFormGet_DefaultPortEquivalence()
+    {
+        var seq = new ReadOnlySequence<byte>(_absoluteFormWithDefaultPort);
+        var reader = new SequenceReader<byte>(seq);
+        _req.ResetForReuse();
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
+    }
+
+    /// <summary>CONNECT authority-form — exercises CONNECT-specific request-target validation.</summary>
+    [Benchmark]
+    public bool ConnectAuthorityForm()
+    {
+        var seq = new ReadOnlySequence<byte>(_connectAuthorityForm);
+        var reader = new SequenceReader<byte>(seq);
+        _req.ResetForReuse();
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
+    }
+
+    /// <summary>Header-only parse for chunked request framing.</summary>
+    [Benchmark]
+    public bool ChunkedHeaders()
+    {
+        var seq = new ReadOnlySequence<byte>(_chunkedHeaders);
+        var reader = new SequenceReader<byte>(seq);
+        _req.ResetForReuse();
+        return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
+    }
+
+    /// <summary>Header-only parse where Transfer-Encoding overrides Content-Length metadata.</summary>
+    [Benchmark]
+    public bool ChunkedHeaders_WithContentLengthPrecedence()
+    {
+        var seq = new ReadOnlySequence<byte>(_chunkedHeadersWithContentLength);
         var reader = new SequenceReader<byte>(seq);
         _req.ResetForReuse();
         return HttpParser.TryParse(ref reader, _req) == HttpParseResult.Success;
