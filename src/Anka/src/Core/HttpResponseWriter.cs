@@ -26,8 +26,8 @@ public sealed class HttpResponseWriter : IDisposable
     private const int DefaultBufSize = 4096 + 512;
 
     private readonly Socket _socket;
-    private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
     private bool _suppressResponseBody;
+    private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
     private static readonly byte[] Continue100Response = "HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray();
 
     /// <summary>
@@ -35,6 +35,7 @@ public sealed class HttpResponseWriter : IDisposable
     /// constructor and returned in <see cref="Dispose"/>.
     /// </summary>
     private byte[] _buf;
+    private readonly HttpResponseStream _stream;
 
     /// <summary>
     /// Responsible for writing HTTP responses to a specified socket.
@@ -48,6 +49,7 @@ public sealed class HttpResponseWriter : IDisposable
         _socket         = socket;
         _defaultHeaders = defaultHeaders ?? [];
         _buf            = ArrayPool<byte>.Shared.Rent(DefaultBufSize);
+        _stream         = new HttpResponseStream();
     }
 
     /// <summary>
@@ -81,9 +83,22 @@ public sealed class HttpResponseWriter : IDisposable
     /// </remarks>
     public void Dispose()
     {
+        _stream.Reset();
         var buf = Interlocked.Exchange(ref _buf, null!);
 
         ArrayPool<byte>.Shared.Return(buf);
+    }
+
+    /// <summary>
+    /// Gets a <see cref="Stream"/> that writes directly to the response using chunked transfer encoding.
+    /// The headers are automatically sent when the first byte is written to the stream, or when the stream is disposed.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token for the stream operations.</param>
+    /// <returns>A <see cref="Stream"/> for writing the response body.</returns>
+    public Stream GetStream(CancellationToken cancellationToken = default)
+    {
+        _stream.Initialize(this, cancellationToken, _suppressResponseBody);
+        return _stream;
     }
 
     /// <summary>
@@ -729,6 +744,18 @@ public sealed class HttpResponseWriter : IDisposable
         _   => "Unknown"u8,
     };
 
+    /// <summary>
+    /// Determines whether the response body should be suppressed
+    /// based on the specified HTTP status code.
+    /// </summary>
+    /// <param name="statusCode">
+    /// The HTTP status code to evaluate.
+    /// </param>
+    /// <returns>
+    /// A value indicating whether the response body is forbidden
+    /// for the provided status code. Returns <c>true</c> if the response body is not allowed;
+    /// otherwise, <c>false</c>.
+    /// </returns>
     private static bool IsBodyForbiddenStatus(int statusCode) =>
         statusCode is >= 100 and < 200 or 204 or 304;
 }

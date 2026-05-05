@@ -385,7 +385,7 @@ Anka returns the following automatic error responses before the user handler run
 | TLS / HTTPS | Not built-in — terminate TLS at a reverse proxy |
 | WebSocket upgrade | Not implemented |
 | Content-Encoding (gzip, deflate, br) | Not built-in — decompress in user code |
-| Chunked *response* encoding | Not implemented — all responses carry `Content-Length` |
+| Chunked *response* encoding | Supported via `response.GetStream()` — returns a `Stream` that sends `Transfer-Encoding: chunked`; headers + terminating chunk managed automatically |
 | Trailer headers in *responses* | Not implemented |
 | HTTP/0.9 | Rejected |
 
@@ -534,6 +534,22 @@ ValueTask WriteAsync(
 | `extraHeaders` | Zero-allocation per-request headers. Pre-build a `static readonly HttpHeader[]` for hot paths. |
 
 > **Fluent API:** Use `response.AddHeader(name, value).WriteAsync(...)` to attach extra headers without building an array. See `HttpResponseWriterExtensions`.
+
+```csharp
+// Streaming / chunked response
+Stream GetStream(CancellationToken cancellationToken = default)
+```
+
+Returns an `HttpResponseStream` that writes the response body using `Transfer-Encoding: chunked`. The 200 status line and chunked headers are sent automatically on the first write; the terminating `0\r\n\r\n` chunk is sent when the stream is disposed.
+
+```csharp
+await using var stream = response.GetStream(cancellationToken);
+await stream.WriteAsync(chunk1, cancellationToken);
+await stream.WriteAsync(chunk2, cancellationToken);
+// terminating chunk sent on DisposeAsync
+```
+
+`HttpResponseStream` is connection-scoped and reused across keep-alive requests — `GetStream()` reinitialises it without allocating. HEAD requests are handled correctly: headers are sent but chunk data is suppressed.
 
 **Supported Status Code Reason Phrases:**
 100 Continue · 200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 414 URI Too Long · 431 Request Header Fields Too Large · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · 505 HTTP Version Not Supported · others → "Unknown"
@@ -987,6 +1003,7 @@ Anka/
 │       │   ├── HttpHeaders.cs       (zero-alloc header struct, InlineArray)
 │       │   ├── HttpMethod.cs        (enum: byte)
 │       │   ├── HttpRequest.cs       (parsed request + buffer ownership)
+│       │   ├── HttpResponseStream.cs(chunked response stream, connection-scoped reuse)
 │       │   ├── HttpResponseWriter.cs(response writer, ArrayPool)
 │       │   ├── HttpResponseWriterExtensions.cs (fluent AddHeader API)
 │       │   ├── HttpVersion.cs       (enum: byte)
@@ -1044,7 +1061,7 @@ Anka/
 
 ## Test Coverage
 
-**242 tests** — all passing.
+**246 tests** — all passing.
 
 ```bash
 dotnet test Anka.slnx --nologo
@@ -1065,6 +1082,7 @@ dotnet test Anka.slnx --nologo
 | `HttpVersionParserTests` | 8 | Version parsing, malformed token detection |
 | `RequestTargetSizeLimitTests` | 7 | Target size enforcement, 414 responses |
 | `HttpMethodParserTests` | 6 | All HTTP method tokens, unknown methods |
+| `StreamingTests` | 4 | Chunked response stream, `GetStream()`, `CopyToAsync` |
 
 ---
 

@@ -34,7 +34,7 @@ ReadOnlyMemory<byte> textPlain     = "text/plain"u8.ToArray();
  // ── PostgreSQL data source ────────────────────────────────────────────────────
 
  var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL") ??
-             "Host=localhost;Database=hello_world;Username=benchmarkdbuser;Password=benchmarkdbpass";
+             "Host=localhost;Database=hello_world;Username=benchmarkdbuser;Password=benchmarkdbpassword";
 
 // NpgsqlSlimDataSourceBuilder is required for Native AOT (no reflection-based type discovery).
  var dataSourceBuilder = new NpgsqlSlimDataSourceBuilder(dbUrl);
