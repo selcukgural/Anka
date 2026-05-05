@@ -40,6 +40,7 @@ public static class HttpHeaderNames
     public static ReadOnlySpan<byte> WwwAuthenticate => "www-authenticate"u8;
     public static ReadOnlySpan<byte> Allow => "allow"u8;
     public static ReadOnlySpan<byte> RetryAfter => "retry-after"u8;
+    public static ReadOnlySpan<byte> Chunked => "chunked"u8;
 
     #endregion
 

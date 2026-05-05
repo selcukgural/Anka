@@ -161,7 +161,7 @@ public sealed class HttpResponseWriter : IDisposable
             buf = tempBuf;
         }
 
-        var pos = BuildHeaderBlock(buf, statusCode, body, keepAlive, contentType, _defaultHeaders, extraHeaders, smallBodyThreshold);
+        var pos = BuildHeaderBlock(buf, statusCode, body.Length, false, keepAlive, contentType, _defaultHeaders, extraHeaders, smallBodyThreshold, body.Span);
 
         // Fast synchronous path: try sending without async state machine.
         if (smallBodyThreshold > 0 || body.IsEmpty || suppressBody)
@@ -172,6 +172,111 @@ public sealed class HttpResponseWriter : IDisposable
 
         // Large body: headers + separate body send.
         return SendHeadersThenBody(buf, pos, body, tempBuf, cancellationToken);
+    }
+
+    /// <summary>
+    /// Starts a chunked HTTP response by sending the status line and headers with <c>Transfer-Encoding: chunked</c>.
+    /// </summary>
+    /// <param name="statusCode">The HTTP status code.</param>
+    /// <param name="contentType">The Content-Type header value bytes. Omitted if empty.</param>
+    /// <param name="keepAlive">Whether to emit <c>Connection: keep-alive</c> or <c>Connection: close</c>.</param>
+    /// <param name="extraHeaders">Additional response headers.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
+    public ValueTask StartChunkedResponseAsync(
+        int statusCode,
+        ReadOnlyMemory<byte> contentType = default,
+        bool keepAlive = true,
+        ReadOnlySpan<HttpHeader> extraHeaders = default,
+        CancellationToken cancellationToken = default)
+    {
+        const int headerEstimate = 512;
+        var extraSize = 0;
+
+        foreach (var h in _defaultHeaders)
+        {
+            extraSize += h.Name.Length + 2 + h.Value.Length + 2;
+        }
+
+        foreach (var h in extraHeaders)
+        {
+            extraSize += h.Name.Length + 2 + h.Value.Length + 2;
+        }
+
+        var needed = headerEstimate + extraSize;
+
+        byte[]? tempBuf = null;
+        var buf = _buf;
+
+        if (needed > buf.Length)
+        {
+            tempBuf = ArrayPool<byte>.Shared.Rent(needed);
+            buf = tempBuf;
+        }
+
+        var pos = BuildHeaderBlock(buf, statusCode, 0, true, keepAlive, contentType, _defaultHeaders, extraHeaders, 0);
+
+        return SendSingleBuffer(buf, pos, tempBuf, cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes a single data chunk to the client using chunked transfer encoding.
+    /// <see cref="StartChunkedResponseAsync"/> must be called before calling this method.
+    /// </summary>
+    /// <param name="chunk">The data chunk to send.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
+    public ValueTask WriteChunkAsync(ReadOnlyMemory<byte> chunk, CancellationToken cancellationToken = default)
+    {
+        if (chunk.IsEmpty)
+        {
+            return default;
+        }
+
+        // Format: [HexSize]\r\n[Data]\r\n
+        // Hex(int.MaxValue) is 8 chars. + 2 (\r\n) + length + 2 (\r\n)
+        var needed = 8 + 2 + chunk.Length + 2;
+        byte[]? tempBuf = null;
+        var buf = _buf;
+
+        if (needed > buf.Length)
+        {
+            tempBuf = ArrayPool<byte>.Shared.Rent(needed);
+            buf = tempBuf;
+        }
+
+        var pos = 0;
+        var span = buf.AsSpan();
+
+        if (!Utf8Formatter.TryFormat(chunk.Length, span, out var written, 'X'))
+        {
+            if (tempBuf is not null) ArrayPool<byte>.Shared.Return(tempBuf);
+            throw new InvalidOperationException("Failed to format chunk size.");
+        }
+
+        pos += written;
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+
+        chunk.Span.CopyTo(span[pos..]);
+        pos += chunk.Length;
+
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+
+        return SendSingleBuffer(buf, pos, tempBuf, cancellationToken);
+    }
+
+    private static readonly byte[] FinalChunk = "0\r\n\r\n"u8.ToArray();
+
+    /// <summary>
+    /// Finalizes a chunked HTTP response by sending the terminating zero-length chunk.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
+    public ValueTask FinishChunkedResponseAsync(CancellationToken cancellationToken = default)
+    {
+        return SendBody(FinalChunk, cancellationToken);
     }
 
     /// <summary>
@@ -447,8 +552,8 @@ public sealed class HttpResponseWriter : IDisposable
     /// Writes the header block (and optionally an inline small body) into <paramref name="buf"/>
     /// and returns the number of bytes written.
     /// </summary>
-    private static int BuildHeaderBlock(byte[] buf, int statusCode, ReadOnlyMemory<byte> body, bool keepAlive, ReadOnlyMemory<byte> contentType,
-                                        IReadOnlyList<HttpHeader> defaultHeaders, ReadOnlySpan<HttpHeader> extraHeaders, int smallBodyThreshold)
+    private static int BuildHeaderBlock(byte[] buf, int statusCode, int bodyLength, bool isChunked, bool keepAlive, ReadOnlyMemory<byte> contentType,
+                                        IReadOnlyList<HttpHeader> defaultHeaders, ReadOnlySpan<HttpHeader> extraHeaders, int smallBodyThreshold, ReadOnlySpan<byte> body = default)
     {
         var span = buf.AsSpan();
         var pos = 0;
@@ -468,12 +573,23 @@ public sealed class HttpResponseWriter : IDisposable
 
         if (!forbidBodyHeaders)
         {
-            // Content-Length
-            WriteLiteral(ContentLengthName, span, ref pos);
-            Utf8Formatter.TryFormat(body.Length, span[pos..], out var written);
-            pos += written;
-            span[pos++] = (byte)'\r';
-            span[pos++] = (byte)'\n';
+            if (isChunked)
+            {
+                WriteLiteral(HttpHeaderNames.TransferEncoding, span, ref pos);
+                WriteLiteral(": "u8, span, ref pos);
+                WriteLiteral(HttpHeaderNames.Chunked, span, ref pos);
+                span[pos++] = (byte)'\r';
+                span[pos++] = (byte)'\n';
+            }
+            else
+            {
+                // Content-Length
+                WriteLiteral(ContentLengthName, span, ref pos);
+                Utf8Formatter.TryFormat(bodyLength, span[pos..], out var written);
+                pos += written;
+                span[pos++] = (byte)'\r';
+                span[pos++] = (byte)'\n';
+            }
         }
 
         // Date (TFB General Requirement #5) — refreshed at most once per second
@@ -517,7 +633,7 @@ public sealed class HttpResponseWriter : IDisposable
         }
 
         // Copy small bodies into the header buffer for a single sending.
-        body.Span.CopyTo(span[pos..]);
+        body.CopyTo(span[pos..]);
         pos += body.Length;
 
         return pos;

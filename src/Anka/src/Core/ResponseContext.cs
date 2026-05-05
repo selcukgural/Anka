@@ -77,4 +77,17 @@ public readonly struct ResponseContext
         _writer.WriteAsync(statusCode, body, contentType, keepAlive,
             System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_headers),
             cancellationToken);
+
+    /// <summary>
+    /// Starts a chunked HTTP response with any previously added extra headers.
+    /// Delegates to <see cref="HttpResponseWriter.StartChunkedResponseAsync(int, ReadOnlyMemory{byte}, bool, ReadOnlySpan{HttpHeader}, CancellationToken)"/>.
+    /// </summary>
+    public ValueTask StartChunkedResponseAsync(
+        int                  statusCode,
+        ReadOnlyMemory<byte> contentType       = default,
+        bool                 keepAlive         = true,
+        CancellationToken    cancellationToken = default) =>
+        _writer.StartChunkedResponseAsync(statusCode, contentType, keepAlive,
+            System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_headers),
+            cancellationToken);
 }

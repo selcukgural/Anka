@@ -8,4 +8,4 @@ namespace Anka.Exceptions;
 /// This exception is a specialized form of <see cref="ArgumentException"/> used
 /// specifically within the Anka library to indicate argument-related errors.
 /// </remarks>
-public sealed class AnkaArgumentException(string message,string paramName) : ArgumentException(message, paramName);
+public sealed class AnkaArgumentException(string message, string paramName) : ArgumentException(message, paramName);

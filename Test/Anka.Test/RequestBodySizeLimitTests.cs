@@ -26,8 +26,10 @@ public class RequestBodySizeLimitTests
     [Fact]
     public void MaxRequestBodySize_SetZero_DoesNotThrow()
     {
-        var options = new ServerOptions();
-        options.MaxRequestBodySize = 0;
+        var options = new ServerOptions
+        {
+            MaxRequestBodySize = 0
+        };
         Assert.Equal(0, options.MaxRequestBodySize);
     }
 
@@ -59,8 +61,10 @@ public class RequestBodySizeLimitTests
     [Fact]
     public async Task Post_BodyWithinLimit_Returns200()
     {
-        var options = new ServerOptions();
-        options.MaxRequestBodySize = 100;
+        var options = new ServerOptions
+        {
+            MaxRequestBodySize = 100
+        };
 
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct),
@@ -76,8 +80,10 @@ public class RequestBodySizeLimitTests
     public async Task Post_BodyExactlyAtLimit_Returns200()
     {
         var body = new string('a', 50);
-        var options = new ServerOptions();
-        options.MaxRequestBodySize = 50;
+        var options = new ServerOptions
+        {
+            MaxRequestBodySize = 50
+        };
 
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct),
@@ -94,8 +100,10 @@ public class RequestBodySizeLimitTests
     [Fact]
     public async Task Post_BodyExceedsLimit_Returns413()
     {
-        var options = new ServerOptions();
-        options.MaxRequestBodySize = 10;
+        var options = new ServerOptions
+        {
+            MaxRequestBodySize = 10
+        };
 
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct),
@@ -111,8 +119,10 @@ public class RequestBodySizeLimitTests
     [Fact]
     public async Task Put_BodyExceedsLimit_Returns413()
     {
-        var options = new ServerOptions();
-        options.MaxRequestBodySize = 5;
+        var options = new ServerOptions
+        {
+            MaxRequestBodySize = 5
+        };
 
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct),
@@ -127,8 +137,10 @@ public class RequestBodySizeLimitTests
     [Fact]
     public async Task Patch_BodyExceedsLimit_Returns413()
     {
-        var options = new ServerOptions();
-        options.MaxRequestBodySize = 5;
+        var options = new ServerOptions
+        {
+            MaxRequestBodySize = 5
+        };
 
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct),
@@ -146,8 +158,10 @@ public class RequestBodySizeLimitTests
     public async Task Post_ContentLengthZero_LimitIsZero_Returns200()
     {
         // CL: 0 means no body — must not be blocked even when limit is 0
-        var options = new ServerOptions();
-        options.MaxRequestBodySize = 0;
+        var options = new ServerOptions
+        {
+            MaxRequestBodySize = 0
+        };
 
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct),
