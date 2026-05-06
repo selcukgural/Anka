@@ -10,15 +10,15 @@
 
         <!-- NuGet package metadata -->
         <PackageId>Anka</PackageId>
-        <Version>0.0.1-beta.3</Version>
+        <Version>0.0.1-beta.4</Version>
         <Authors>Selçuk Güral</Authors>
         <Description>Minimal zero-allocation HTTP/1.x server for .NET 8+. Native AOT compatible. Built on raw sockets with a sliding receive window and pooled buffers for an allocation-free steady-state fast path.</Description>
-        <PackageReleaseNotes>Highlights in this release:
-- Added support for HTTP/1.1 chunked response encoding, enabling dynamic content delivery without pre-calculating Content-Length.
-- Added HttpResponseStream: A zero-allocation, reusable Stream implementation for writing chunked bodies.
-- Added new WriteAsync overloads to HttpResponseWriter for seamless integration with chunked responses.
-- Optimized performance for streaming scenarios with dedicated benchmarks showing zero-allocation steady state.
-- Expanded test coverage with comprehensive unit and integration tests for chunked encoding and streaming.</PackageReleaseNotes>
+        <PackageReleaseNotes>   1 - Added support for Trailer headers in chunked responses via HttpResponseStream.AddTrailer.
+   2 - Enhanced RFC compliance: implemented leading CRLF skipping and strict validation for header names/folding.
+   3 - Enforced mandatory Content-Length/Transfer-Encoding for POST, PUT, and PATCH requests (411 Length Required).
+   4 - Improved framing security by rejecting requests containing both Content-Length and Transfer-Encoding headers.
+   5 - Expanded test suite to 254 tests covering edge-case RFC compliance and security.
+   6 - Updated documentation and class references for chunked streaming and feature support.</PackageReleaseNotes>
         <PackageTags>http;server;aot;native-aot;zero-allocation;high-performance;minimal;networking;tcp;http1</PackageTags>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <Copyright>Copyright (c) 2026 Selçuk Güral</Copyright>
