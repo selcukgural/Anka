@@ -130,6 +130,9 @@ internal static class ChunkedBodyParser
     /// <param name="buffer">
     /// The input buffer containing the potential trailer headers and other data.
     /// </param>
+    /// <param name="trailers">
+    /// The <see cref="HttpHeaders"/> collection where parsed trailer headers will be added.
+    /// </param>
     /// <param name="consumed">
     /// When the method returns, contains the total number of bytes consumed from the <paramref name="buffer"/>
     /// if the operation is successful or partially complete; otherwise, zero.
@@ -140,23 +143,39 @@ internal static class ChunkedBodyParser
     /// - <c>Incomplete</c>: The buffer does not contain enough data to complete the trailer parsing.
     /// - <c>Invalid</c>: The trailers could not be parsed due to an invalid format.
     /// </returns>
-    public static ChunkedBodyParseResult TryConsumeTrailers(ReadOnlySpan<byte> buffer, out int consumed)
+    public static ChunkedBodyParseResult TryConsumeTrailers(ReadOnlySpan<byte> buffer, ref HttpHeaders trailers, out int consumed)
     {
         consumed = 0;
         while (true)
         {
-            var lineEnd = buffer[consumed..].IndexOf("\r\n"u8);
+            var remaining = buffer[consumed..];
+            if (remaining.IsEmpty)
+            {
+                return ChunkedBodyParseResult.Incomplete;
+            }
+
+            var lineEnd = remaining.IndexOf("\r\n"u8);
             switch (lineEnd)
             {
                 case < 0:
+                    // Don't reset consumed — keep progress so caller can advance past already-parsed trailers
                     return ChunkedBodyParseResult.Incomplete;
                 case 0:
                     consumed += 2;
                     return ChunkedBodyParseResult.Success;
             }
 
-            var line = buffer.Slice(consumed, lineEnd);
-            if (line.IndexOf((byte)':') <= 0)
+            var line = remaining[..lineEnd];
+            var colonIdx = line.IndexOf((byte)':');
+            if (colonIdx < 0)
+            {
+                return ChunkedBodyParseResult.Invalid;
+            }
+
+            var name = line[..colonIdx].Trim((byte)' ');
+            var value = line[(colonIdx + 1)..].Trim((byte)' ');
+
+            if (!trailers.Add(name, value))
             {
                 return ChunkedBodyParseResult.Invalid;
             }

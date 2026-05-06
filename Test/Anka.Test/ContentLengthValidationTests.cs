@@ -40,16 +40,16 @@ public class ContentLengthValidationTests
     }
 
     [Fact]
-    public async Task Post_WithNoContentLength_Returns200()
+    public async Task Post_WithNoContentLength_Returns411()
     {
-        // RFC 9110 §8.6: SHOULD NOT send Content-Length for zero-length body — must be accepted
+        // RFC 9112 §6.3.3: POST without Content-Length or Transfer-Encoding → 411 Length Required
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
 
         var response = await SendRawAsync(server.Port,
             "POST /api HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.Contains("HTTP/1.1 411 Length Required", response);
     }
 
     [Fact]
@@ -118,16 +118,16 @@ public class ContentLengthValidationTests
     }
 
     [Fact]
-    public async Task Put_WithNoContentLength_Returns200()
+    public async Task Put_WithNoContentLength_Returns411()
     {
-        // RFC 9110 §8.6: same rule applies to PUT
+        // RFC 9112 §6.3.3: PUT without Content-Length or Transfer-Encoding → 411 Length Required
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
 
         var response = await SendRawAsync(server.Port,
             "PUT /resource HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.Contains("HTTP/1.1 411 Length Required", response);
     }
 
     [Fact]

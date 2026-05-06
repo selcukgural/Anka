@@ -35,22 +35,24 @@ public struct HttpHeaders
     /// zero-allocation storage and retrieval of header information.
     /// </summary>
     private readonly struct HeaderEntry(
-        ushort nameOffset, ushort nameLength,
-        ushort valueOffset, ushort valueLength)
+        ushort nameOffset,
+        ushort nameLength,
+        ushort valueOffset,
+        ushort valueLength)
     {
         /// <summary>
         /// Represents the offset within the underlying buffer where an HTTP header name begins.
         /// This offset points to the starting byte of the header name, stored in a zero-allocation
         /// HTTP header collection. Used for efficient access to header names without additional parsing.
         /// </summary>
-        public readonly ushort NameOffset  = nameOffset;
+        public readonly ushort NameOffset = nameOffset;
 
         /// <summary>
         /// Represents the length of an HTTP header name in bytes within the internal buffer.
         /// This value is used in conjunction with <see cref="NameOffset"/> to locate
         /// and validate header names in the buffer during operations such as lookups or additions.
         /// </summary>
-        public readonly ushort NameLength  = nameLength;
+        public readonly ushort NameLength = nameLength;
 
         /// <summary>
         /// Represents the offset, within the internal byte buffer, where the header value associated
@@ -70,14 +72,14 @@ public struct HttpHeaders
         /// </remarks>
         public readonly ushort ValueLength = valueLength;
     }
-    
+
     /// <summary>
     /// The byte array that serves as the backing buffer for storing HTTP header names and values.
     /// This buffer is shared and rented by the parent HTTP request, with no internal allocation
     /// or return handled within this structure. It provides a storage mechanism for the
     /// header data using a zero-allocation approach.
     /// </summary>
-    private byte[]    _buf;
+    private byte[] _buf;
 
     /// <summary>
     /// Tracks the current number of HTTP header entries stored in the collection.
@@ -88,15 +90,16 @@ public struct HttpHeaders
     /// successfully added and is capped at a predefined maximum number of entries
     /// to prevent excessive storage.
     /// </remarks>
-    private int       _count;
+    private int _count;
 
     /// <summary>
     /// Tracks the current writing position within the backing buffer for HTTP header storage.
     /// Used to allocate space for header names and values as they are added to the buffer.
     /// The value represents the next available byte offset for writing data.
     /// </summary>
-    private int       _writePos;
-    private int       _limit;
+    private int _writePos;
+
+    private int _limit;
 
     /// <summary>
     /// Represents an internal array used to store header entries in the <see cref="HttpHeaders"/> struct.
@@ -112,10 +115,10 @@ public struct HttpHeaders
 
     internal void InitBuffer(byte[] sharedBuffer, int startOffset, int maxBytes)
     {
-        _buf      = sharedBuffer;
+        _buf = sharedBuffer;
         _writePos = startOffset;
-        _limit    = Math.Min(sharedBuffer.Length, startOffset + maxBytes);
-        _count    = 0;
+        _limit = Math.Min(sharedBuffer.Length, startOffset + maxBytes);
+        _count = 0;
     }
 
     /// <summary>
@@ -148,7 +151,7 @@ public struct HttpHeaders
         _writePos += value.Length;
 
         _entries[_count++] = new HeaderEntry(
-            nameOffset,  (ushort)name.Length,
+            nameOffset, (ushort)name.Length,
             valueOffset, (ushort)value.Length);
 
         return true;
@@ -159,6 +162,18 @@ public struct HttpHeaders
     /// Represents the offset indicating where data writing has completed, useful for tracking the end of
     /// the allocated region in the underlying buffer after all header entries have been added.
     /// </summary>
+    internal bool IsInitialized => _buf is not null;
+
+    internal byte[]? DetachBuffer()
+    {
+        var buf = _buf;
+        _buf = null!;
+        _count = 0;
+        _writePos = 0;
+        _limit = 0;
+        return buf;
+    }
+
     internal int FinalOffset => _writePos;
 
     /// <summary>
@@ -181,8 +196,8 @@ public struct HttpHeaders
 
         internal HeaderValues(HttpHeaders headers, ReadOnlySpan<byte> lowercaseName)
         {
-            _headers        = headers;
-            _lowercaseName  = lowercaseName;
+            _headers = headers;
+            _lowercaseName = lowercaseName;
         }
 
         public Enumerator GetEnumerator() => new(_headers, _lowercaseName);
@@ -265,7 +280,7 @@ public struct HttpHeaders
             value = buf.Slice(entry.ValueOffset, entry.ValueLength);
             return true;
         }
-        
+
         value = default;
         return false;
     }
@@ -284,8 +299,8 @@ public struct HttpHeaders
     {
         if (name.Length > 128)
         {
-            value = default; 
-            return false; 
+            value = default;
+            return false;
         }
 
         // Inline the search so the stackalloc span never escapes this frame.
@@ -306,7 +321,7 @@ public struct HttpHeaders
             value = buf.Slice(entry.ValueOffset, entry.ValueLength);
             return true;
         }
-        
+
         value = default;
         return false;
     }

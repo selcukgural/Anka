@@ -216,8 +216,9 @@ public class HttpRequestTests
     }
 
     [Fact]
-    public void TransferEncodingChunked_ClearsContentLengthMetadata()
+    public void TransferEncodingChunked_WithContentLength_ReturnsInvalid()
     {
+        // RFC 9112 §6.1: Both Transfer-Encoding and Content-Length → Invalid (400 Bad Request)
         const string raw =
             "POST /upload HTTP/1.1\r\n" +
             "Host: x.com\r\n" +
@@ -225,13 +226,13 @@ public class HttpRequestTests
             "Transfer-Encoding: chunked\r\n" +
             "\r\n";
 
-        using var req = ParseHeadersOrFail(raw).AsDisposable();
-        Assert.True(req.Value.HasChunkedTransferEncoding);
-        Assert.False(req.Value.HasContentLength);
-        Assert.False(req.Value.HasParsedContentLength);
-        Assert.False(req.Value.HasInvalidContentLength);
-        Assert.Equal(0, req.Value.ContentLength);
-        Assert.True(req.Value.Body.IsEmpty);
+        var req = new HttpRequest();
+        var bytes = Encoding.ASCII.GetBytes(raw);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new SequenceReader<byte>(seq);
+        var result = HttpParser.TryParse(ref reader, req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Return();
     }
 
     [Fact]

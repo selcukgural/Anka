@@ -118,6 +118,9 @@ internal sealed class Connection
                         case HttpParseResult.Invalid or HttpParseResult.ConflictingContentLength or HttpParseResult.MissingHostHeader:
                             await writer.WriteAsync(400, keepAlive: false, cancellationToken: _cancellationToken);
                             return;
+                        case HttpParseResult.LengthRequired:
+                            await writer.WriteAsync(411, keepAlive: false, cancellationToken: _cancellationToken);
+                            return;
                         case HttpParseResult.RequestTargetTooLong:
                             await writer.WriteAsync(414, keepAlive: false, cancellationToken: _cancellationToken);
                             return;
@@ -461,13 +464,20 @@ internal sealed class Connection
 
                 if (chunkSize == 0)
                 {
+                    if (!request.Trailers.IsInitialized)
+                    {
+                        var trailerBuf = ArrayPool<byte>.Shared.Rent(1024);
+                        request.Trailers.InitBuffer(trailerBuf, 0);
+                    }
+
                     while (true)
                     {
-                        var trailerResult = ChunkedBodyParser.TryConsumeTrailers(buf.AsSpan(parseOffset, end - parseOffset), out var trailerBytes);
+                        var trailerResult = ChunkedBodyParser.TryConsumeTrailers(buf.AsSpan(parseOffset, end - parseOffset), ref request.Trailers, out var trailerBytes);
                         switch (trailerResult)
                         {
                             case ChunkedBodyParseResult.Incomplete:
                             {
+                                parseOffset += trailerBytes;
                                 var receiveState = await ReceiveMoreIntoBufferAsync(receiver, buf, parseOffset, end, readTimeoutCts);
                                 parseOffset = receiveState.Start;
                                 end = receiveState.End;
@@ -486,6 +496,7 @@ internal sealed class Connection
                         request.Body = bodyLength == 0
                             ? default
                             : request.BodyBuffer!.AsMemory(0, bodyLength);
+                        
                         return new BodyReadState(RequestBodyReadResult.Success, parseOffset, end);
                     }
                 }
@@ -512,6 +523,7 @@ internal sealed class Connection
                         receiver,
                         request.BodyBuffer!.AsMemory(bodyLength + copied, chunkSize - copied),
                         readTimeoutCts);
+                    
                     if (read == 0)
                     {
                         return new BodyReadState(RequestBodyReadResult.ClientClosed, parseOffset, end);
@@ -536,6 +548,7 @@ internal sealed class Connection
                     }
 
                     var receiveState = await ReceiveMoreIntoBufferAsync(receiver, buf, parseOffset, end, readTimeoutCts);
+                    
                     parseOffset = receiveState.Start;
                     end = receiveState.End;
                     if (!receiveState.Success)

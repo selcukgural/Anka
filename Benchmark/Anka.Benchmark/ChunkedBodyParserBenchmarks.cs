@@ -34,6 +34,7 @@ public class ChunkedBodyParserBenchmarks
     {
         var offset = 0;
         var totalBodyBytes = 0;
+        var trailers = new HttpHeaders();
 
         while (true)
         {
@@ -46,7 +47,7 @@ public class ChunkedBodyParserBenchmarks
             offset += sizeConsumed;
             if (chunkSize == 0)
             {
-                var trailersResult = ChunkedBodyParser.TryConsumeTrailers(payload[offset..], out var trailersConsumed);
+                var trailersResult = ChunkedBodyParser.TryConsumeTrailers(payload[offset..], ref trailers, out var trailersConsumed);
                 if (trailersResult != ChunkedBodyParseResult.Success)
                 {
                     throw new InvalidOperationException($"Unexpected trailer parse result: {trailersResult}");

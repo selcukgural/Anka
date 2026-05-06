@@ -17,7 +17,7 @@ public class ChunkedResponseTests
                 await response.StartChunkedResponseAsync(200, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken);
                 await response.WriteChunkAsync("first "u8.ToArray(), cancellationToken);
                 await response.WriteChunkAsync("second"u8.ToArray(), cancellationToken);
-                await response.FinishChunkedResponseAsync(cancellationToken);
+                await response.FinishChunkedResponseAsync(cancellationToken: cancellationToken);
             });
 
         using var client = new TcpClient();
@@ -47,7 +47,7 @@ public class ChunkedResponseTests
                     .AddHeader("X-Custom"u8, "value"u8)
                     .StartChunkedResponseAsync(200, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken);
                 await response.WriteChunkAsync("fluent"u8.ToArray(), cancellationToken);
-                await response.FinishChunkedResponseAsync(cancellationToken);
+                await response.FinishChunkedResponseAsync(cancellationToken: cancellationToken);
             });
 
         using var client = new TcpClient();

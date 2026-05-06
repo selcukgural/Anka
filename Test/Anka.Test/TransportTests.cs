@@ -125,11 +125,11 @@ public class TransportTests
     }
 
     [Fact]
-    public async Task ChunkedTransferEncoding_WithContentLength_IgnoresContentLengthForFraming()
+    public async Task ChunkedTransferEncoding_WithContentLength_ReturnsBadRequest()
     {
         await using var server = await TestServer.StartAsync(
-            static (request, response, cancellationToken) =>
-                response.WriteAsync(200, request.Body, TextPlainBytes, keepAlive: false, cancellationToken: cancellationToken));
+            static (_, response, cancellationToken) =>
+                response.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: cancellationToken));
 
         using var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, server.Port);
@@ -150,8 +150,8 @@ public class TransportTests
 
         var response = await reader.ReadResponseAsync(timeout.Token);
 
-        Assert.Contains("HTTP/1.1 200 OK", response);
-        Assert.EndsWith("hello", response, StringComparison.Ordinal);
+        Assert.Contains("HTTP/1.1 400 Bad Request", response);
+        Assert.Contains("Connection: close", response);
     }
 
     [Fact]

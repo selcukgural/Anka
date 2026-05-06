@@ -202,6 +202,13 @@ internal static class HttpParser
             return HttpParseResult.Invalid;
         }
 
+        if (hasChunkedTransferEncoding && req.HasContentLength)
+        {
+            // RFC 7230 §3.3.3: If a message is received with both a Transfer-Encoding header field 
+            // and a Content-Length header field, the latter MUST be responded to with a 400 (Bad Request).
+            return HttpParseResult.Invalid;
+        }
+
         req.HasChunkedTransferEncoding = hasChunkedTransferEncoding;
         if (req.HasChunkedTransferEncoding)
         {
@@ -213,6 +220,11 @@ internal static class HttpParser
         else if (req.HasInvalidContentLength)
         {
             return HttpParseResult.Invalid;
+        }
+        else if ((req.Method == HttpMethod.Post || req.Method == HttpMethod.Put) && !req.HasContentLength)
+        {
+            // RFC 7231 §6.5.10: 411 Length Required.
+            return HttpParseResult.LengthRequired;
         }
 
         req.IsKeepAlive = ComputeKeepAlive(req.Version, ref req.Headers);

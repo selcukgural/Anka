@@ -146,7 +146,8 @@ public class HttpParserTests
     public void TryParse_AllKnownMethods_ParsedSuccessfully(string method)
     {
         var target = method == "CONNECT" ? "example.com:443" : "/";
-        var raw = $"{method} {target} HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        var contentLength = method is "POST" or "PUT" or "PATCH" ? "Content-Length: 0\r\n" : "";
+        var raw = $"{method} {target} HTTP/1.1\r\nHost: example.com\r\n{contentLength}\r\n";
         Assert.True(TryParse(raw, out var req));
         Assert.NotNull(req);
         req!.Return();
@@ -589,8 +590,9 @@ public class HttpParserTests
     }
 
     [Fact]
-    public void TryParseHeaders_TransferEncodingChunked_ClearsContentLengthMetadata()
+    public void TryParseHeaders_TransferEncodingChunked_WithContentLength_ReturnsInvalid()
     {
+        // RFC 9112 §6.1: Both Transfer-Encoding and Content-Length → 400 Bad Request
         const string raw =
             "POST /upload HTTP/1.1\r\n" +
             "Host: example.com\r\n" +
@@ -601,12 +603,7 @@ public class HttpParserTests
         var req = CreateRequest();
         var result = TryParseHeadersResult(raw, req, out _);
 
-        Assert.Equal(HttpParseResult.Success, result);
-        Assert.True(req.HasChunkedTransferEncoding);
-        Assert.False(req.HasContentLength);
-        Assert.False(req.HasParsedContentLength);
-        Assert.False(req.HasInvalidContentLength);
-        Assert.Equal(0, req.ContentLength);
+        Assert.Equal(HttpParseResult.Invalid, result);
         req.Dispose();
     }
 

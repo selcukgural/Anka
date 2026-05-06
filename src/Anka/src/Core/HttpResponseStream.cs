@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace Anka;
 
 /// <summary>
@@ -9,6 +11,7 @@ public sealed class HttpResponseStream : Stream
     private bool _isStarted;
     private bool _isFinished;
     private bool _suppressBody;
+    private List<HttpHeader>? _trailers;
     private HttpResponseWriter? _writer;
     private CancellationToken _cancellationToken;
 
@@ -44,6 +47,7 @@ public sealed class HttpResponseStream : Stream
         _isFinished = false;
         _suppressBody = false;
         _cancellationToken = CancellationToken.None;
+        _trailers?.Clear();
     }
 
     /// <summary>
@@ -189,6 +193,17 @@ public sealed class HttpResponseStream : Stream
     }
 
     /// <summary>
+    /// Adds a trailer header to be sent at the end of the response.
+    /// Only applicable for chunked responses.
+    /// </summary>
+    /// <param name="header">The trailer header to add.</param>
+    public void AddTrailer(HttpHeader header)
+    {
+        _trailers ??= [];
+        _trailers.Add(header);
+    }
+
+    /// <summary>
     /// Finalizes the chunked HTTP response by sending the terminating chunk.
     /// If the response was not started, it initializes the chunked response and then completes it.
     /// </summary>
@@ -209,7 +224,14 @@ public sealed class HttpResponseStream : Stream
 
         if (!_suppressBody)
         {
-            await _writer.FinishChunkedResponseAsync(cancellationToken);
+            if (_trailers is { Count: > 0 })
+            {
+                await _writer.FinishChunkedResponseAsync(CollectionsMarshal.AsSpan(_trailers), cancellationToken);
+            }
+            else
+            {
+                await _writer.FinishChunkedResponseAsync(default, cancellationToken);
+            }
         }
 
         _isFinished = true;

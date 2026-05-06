@@ -72,7 +72,8 @@ public class ChunkedBodyParserTests
     [Fact]
     public void TryConsumeTrailers_EmptyTrailerBlock_ReturnsSuccess()
     {
-        var result = ChunkedBodyParser.TryConsumeTrailers("\r\n"u8, out var consumed);
+        var trailers = new HttpHeaders();
+        var result = ChunkedBodyParser.TryConsumeTrailers("\r\n"u8, ref trailers, out var consumed);
 
         Assert.Equal(ChunkedBodyParseResult.Success, result);
         Assert.Equal(2, consumed);
@@ -81,23 +82,36 @@ public class ChunkedBodyParserTests
     [Fact]
     public void TryConsumeTrailers_MultipleTrailerLines_ReturnsSuccess()
     {
-        var result = ChunkedBodyParser.TryConsumeTrailers("ETag: abc\r\nX-Test: ok\r\n\r\n"u8, out var consumed);
+        var trailers = new HttpHeaders();
+        trailers.InitBuffer(new byte[1024], 0);
+        var result = ChunkedBodyParser.TryConsumeTrailers("ETag: abc\r\nX-Test: ok\r\n\r\n"u8, ref trailers, out var consumed);
 
         Assert.Equal(ChunkedBodyParseResult.Success, result);
         Assert.Equal("ETag: abc\r\nX-Test: ok\r\n\r\n".Length, consumed);
+        
+        Assert.True(trailers.TryGetValue("etag"u8, out var etag));
+        Assert.Equal("abc", System.Text.Encoding.ASCII.GetString(etag));
+        Assert.True(trailers.TryGetValue("x-test"u8, out var xTest));
+        Assert.Equal("ok", System.Text.Encoding.ASCII.GetString(xTest));
     }
 
     [Fact]
     public void TryConsumeTrailers_InvalidLine_ReturnsInvalid()
     {
-        var result = ChunkedBodyParser.TryConsumeTrailers("broken\r\n\r\n"u8, out _);
+        var trailers = new HttpHeaders();
+        var result = ChunkedBodyParser.TryConsumeTrailers("broken\r\n\r\n"u8, ref trailers, out _);
         Assert.Equal(ChunkedBodyParseResult.Invalid, result);
     }
 
     [Fact]
     public void TryConsumeTrailers_IncompleteLine_ReturnsIncomplete()
     {
-        var result = ChunkedBodyParser.TryConsumeTrailers("ETag: abc\r\nX-Test"u8, out _);
+        var trailers = new HttpHeaders();
+        trailers.InitBuffer(new byte[1024], 0);
+        var result = ChunkedBodyParser.TryConsumeTrailers("ETag: abc\r\nX-Test"u8, ref trailers, out var consumed);
         Assert.Equal(ChunkedBodyParseResult.Incomplete, result);
+        Assert.Equal("ETag: abc\r\n".Length, consumed);
+        Assert.True(trailers.TryGetValue("etag"u8, out var etag));
+        Assert.Equal("abc", System.Text.Encoding.ASCII.GetString(etag));
     }
 }

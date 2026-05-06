@@ -59,7 +59,8 @@ internal static class HttpMethodParser
     /// value from the <see cref="HttpMethod"/> enum.
     /// </param>
     /// <returns>
-    /// A <see cref="ReadOnlySpan{byte}"/> containing the byte representation of the specified HTTP method.
+    /// A <see cref="ReadOnlySpan{BYTE}" />
+    /// containing the byte representation of the specified HTTP method.
     /// If the method is unknown, this returns the byte sequence corresponding to "UNKNOWN".
     /// </returns>
     public static ReadOnlySpan<byte> ToBytes(this HttpMethod method) => method switch

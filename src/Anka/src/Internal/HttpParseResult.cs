@@ -12,5 +12,6 @@ internal enum HttpParseResult
     HeaderFieldsTooLarge = 4,
     HttpVersionNotSupported = 5,
     ConflictingContentLength = 6,
-    MissingHostHeader = 7
+    MissingHostHeader = 7,
+    LengthRequired = 8
 }

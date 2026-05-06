@@ -108,6 +108,11 @@ public sealed class HttpRequest
     public HttpHeaders Headers;
 
     /// <summary>
+    /// Collection of HTTP trailer headers received with a chunked request body.
+    /// </summary>
+    public HttpHeaders Trailers;
+
+    /// <summary>
     /// Represents the body content of the HTTP request as a read-only sequence of bytes.
     /// This property provides access to the raw binary data of the request body,
     /// which could be empty if the request does not include body content.
@@ -212,6 +217,12 @@ public sealed class HttpRequest
         RequestTargetForm = RequestTargetForm.Origin;
         AbsoluteFormScheme = AbsoluteFormScheme.None;
         Headers      = default;
+        var trailerBuf = Trailers.DetachBuffer();
+        if (trailerBuf is not null)
+        {
+            ArrayPool<byte>.Shared.Return(trailerBuf);
+        }
+        Trailers     = default;
     }
 
     /// <summary>

@@ -282,16 +282,45 @@ public sealed class HttpResponseWriter : IDisposable
         return SendSingleBuffer(buf, pos, tempBuf, cancellationToken);
     }
 
-    private static readonly byte[] FinalChunk = "0\r\n\r\n"u8.ToArray();
+    private static readonly byte[] FinalChunkNoTrailers = "0\r\n\r\n"u8.ToArray();
 
     /// <summary>
-    /// Finalizes a chunked HTTP response by sending the terminating zero-length chunk.
+    /// Finalizes a chunked HTTP response by sending the terminating zero-length chunk
+    /// and any optional trailer headers.
     /// </summary>
+    /// <param name="trailers">An optional span of <see cref="HttpHeader"/> to be sent as trailers.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
-    public ValueTask FinishChunkedResponseAsync(CancellationToken cancellationToken = default)
+    public ValueTask FinishChunkedResponseAsync(ReadOnlySpan<HttpHeader> trailers = default, CancellationToken cancellationToken = default)
     {
-        return SendBody(FinalChunk, cancellationToken);
+        if (trailers.IsEmpty)
+        {
+            return SendBody(FinalChunkNoTrailers, cancellationToken);
+        }
+
+        // Calculate size: "0\r\n" + headers + "\r\n"
+        var size = 3;
+        foreach (var h in trailers)
+        {
+            size += h.Name.Length + 2 + h.Value.Length + 2;
+        }
+        size += 2;
+
+        var buf = ArrayPool<byte>.Shared.Rent(size);
+        var pos = 0;
+        buf[pos++] = (byte)'0';
+        buf[pos++] = (byte)'\r';
+        buf[pos++] = (byte)'\n';
+
+        foreach (var h in trailers)
+        {
+            WriteHeader(h, buf, ref pos);
+        }
+
+        buf[pos++] = (byte)'\r';
+        buf[pos++] = (byte)'\n';
+
+        return SendSingleBuffer(buf, pos, buf, cancellationToken);
     }
 
     /// <summary>
@@ -734,6 +763,7 @@ public sealed class HttpResponseWriter : IDisposable
         413 => "Payload Too Large"u8,
         414 => "URI Too Long"u8,
         415 => "Unsupported Media Type"u8,
+        417 => "Expectation Failed"u8,
         429 => "Too Many Requests"u8,
         431 => "Request Header Fields Too Large"u8,
         500 => "Internal Server Error"u8,
