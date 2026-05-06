@@ -694,6 +694,11 @@ internal sealed class Connection
     /// </returns>
     private static bool ShouldSend100Continue(HttpRequest request)
     {
+        if (request.Version != HttpVersion.Http11)
+        {
+            return false;
+        }
+
         if (!request.Headers.TryGetValue(HttpHeaderNames.Expect, out var expectValue))
         {
             return false;

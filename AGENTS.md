@@ -212,8 +212,8 @@ await client.ConnectAsync(IPAddress.Loopback, server.Port);
 3. **Calling async from sync context** — Wrap ref struct access in synchronous helper
 4. **Forgetting `req.Return()`** — Exhausts the single-slot pool; leaves garbage for GC
 5. **`ConcurrentQueue<T>` instead of CAS pool** — Allocates ~608 B per 32 operations
-6. **Trying to optimize streaming response bodies** — All responses must carry `Content-Length`
-7. **Assuming chunked response encoding works** — Not implemented; all responses are size-known
+6. **Trying to optimize streaming response bodies** — Use `response.GetStream()` for chunked transfer encoding (zero-allocation for header construction).
+7. **Assuming chunked response encoding works** — Fully supported via `response.GetStream()`.Terminating chunk and trailers managed automatically.
 
 ---
 

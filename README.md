@@ -386,7 +386,7 @@ Anka returns the following automatic error responses before the user handler run
 | WebSocket upgrade | Not implemented |
 | Content-Encoding (gzip, deflate, br) | Not built-in — decompress in user code |
 | Chunked *response* encoding | Supported via `response.GetStream()` — returns a `Stream` that sends `Transfer-Encoding: chunked`; headers + terminating chunk managed automatically |
-| Trailer headers in *responses* | Not implemented |
+| Trailer headers in *responses* | Supported via `stream.AddTrailer(header)` when using `response.GetStream()` |
 | HTTP/0.9 | Rejected |
 
 ```
@@ -722,6 +722,7 @@ A fluent builder for attaching extra per-request response headers. Obtained via 
 await response
     .AddHeader(HttpHeaderNames.Location, "/new-path"u8)
     .WriteAsync(301, default, default, keepAlive: false, ct);
+
 
 await response
     .AddHeader(HttpHeaderNames.AccessControlAllowOrigin, "*"u8)

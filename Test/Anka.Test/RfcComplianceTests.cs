@@ -1,12 +1,63 @@
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using Anka;
 
 namespace Anka.Test;
 
 public class RfcComplianceTests
 {
+    private static HttpRequest CreateRequest() => new();
+    private static HttpParseResult TryParseResult(string raw, HttpRequest request)
+    {
+        var bytes = Encoding.ASCII.GetBytes(raw);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new SequenceReader<byte>(seq);
+        request.ResetForReuse();
+        return HttpParser.TryParse(ref reader, request);
+    }
+
+    [Fact]
+    public void TryParse_SkipLeadingCRLF_ReturnsSuccess()
+    {
+        const string raw = "\r\n\r\nGET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req);
+        Assert.Equal(HttpParseResult.Success, result);
+        Assert.Equal(HttpMethod.Get, req.Method);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_WhitespaceBeforeHeaderColon_ReturnsInvalid()
+    {
+        const string raw = "GET / HTTP/1.1\r\nHost : example.com\r\n\r\n";
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_ObsFoldHeader_ReturnsInvalid()
+    {
+        const string raw = "GET / HTTP/1.1\r\nHost: example.com\r\n X-Fold: value\r\n\r\n";
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Return();
+    }
+
+    [Fact]
+    public void TryParse_WhitespaceBeforeContentLengthColon_ReturnsInvalid()
+    {
+        const string raw = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length : 10\r\n\r\n1234567890";
+        var req = CreateRequest();
+        var result = TryParseResult(raw, req);
+        Assert.Equal(HttpParseResult.Invalid, result);
+        req.Return();
+    }
+
     [Fact]
     public async Task Post_MissingLengthHeaders_Returns411LengthRequired()
     {
@@ -29,7 +80,8 @@ public class RfcComplianceTests
             await res.WriteAsync(200, "OK"u8.ToArray(), "text/plain"u8.ToArray(), true, ct);
         });
 
-        var request = "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        var request =
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
         var response = await SendRawAsync(server.Port, request);
 
         Assert.Contains("400 Bad Request", response);
@@ -45,10 +97,13 @@ public class RfcComplianceTests
             {
                 trailerValueMemory = val.ToArray();
             }
+
             return res.WriteAsync(200, "OK"u8.ToArray(), "text/plain"u8.ToArray(), true, ct);
         });
 
-        var request = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n" + "X-Trailer: test-value\r\n\r\n";
+        var request =
+            "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n" +
+            "X-Trailer: test-value\r\n\r\n";
         var response = await SendRawAsync(server.Port, request);
 
         Assert.Contains("200 OK", response);
@@ -63,7 +118,8 @@ public class RfcComplianceTests
         {
             var stream = res.GetStream(ct);
             await stream.WriteAsync("Hello"u8.ToArray(), ct);
-            ((HttpResponseStream)stream).AddTrailer(new HttpHeader("X-Response-Trailer"u8.ToArray(), "trailer-ok"u8.ToArray()));
+            ((HttpResponseStream)stream).AddTrailer(new HttpHeader("X-Response-Trailer"u8.ToArray(),
+                "trailer-ok"u8.ToArray()));
             await stream.DisposeAsync();
         });
 
@@ -83,7 +139,7 @@ public class RfcComplianceTests
         stream.ReadTimeout = 2000;
         var bytes = Encoding.ASCII.GetBytes(rawRequest);
         await stream.WriteAsync(bytes, 0, bytes.Length);
-        
+
         var buffer = new byte[8192];
         var totalRead = 0;
         using var cts = new CancellationTokenSource(2000);
@@ -98,9 +154,11 @@ public class RfcComplianceTests
             {
                 break;
             }
+
             if (read == 0) break;
             totalRead += read;
         }
+
         return Encoding.ASCII.GetString(buffer, 0, totalRead);
     }
 
@@ -125,10 +183,10 @@ public class RfcComplianceTests
             var cts = new CancellationTokenSource();
             var server = new Server(handler, port, "127.0.0.1", options);
             var runTask = server.StartAsync(cts.Token);
-            
+
             // Wait a bit for server to start
             await Task.Delay(100, cts.Token);
-            
+
             return new TestServer(server, port, cts, runTask);
         }
 

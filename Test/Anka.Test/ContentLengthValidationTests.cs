@@ -157,7 +157,7 @@ public class ContentLengthValidationTests
     }
 
     [Fact]
-    public async Task Patch_WithNoContentLength_Returns200()
+    public async Task Patch_WithNoContentLength_Returns411()
     {
         await using var server = await TestServer.StartAsync(
             static (req, res, ct) => res.WriteAsync(200, OkBody, TextPlainBytes, cancellationToken: ct));
@@ -165,7 +165,7 @@ public class ContentLengthValidationTests
         var response = await SendRawAsync(server.Port,
             "PATCH /resource HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n");
 
-        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.Contains("HTTP/1.1 411 Length Required", response);
     }
 
     [Fact]

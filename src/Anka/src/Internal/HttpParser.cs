@@ -43,6 +43,11 @@ internal static class HttpParser
         // Body
         if (req is { HasChunkedTransferEncoding: false, HasContentLength: true, HasInvalidContentLength: false, ContentLength: > 0 })
         {
+            if (req.ContentLength > int.MaxValue)
+            {
+                return HttpParseResult.Invalid;
+            }
+
             if (parser.Remaining < req.ContentLength)
             {
                 return HttpParseResult.Incomplete;
@@ -130,10 +135,19 @@ internal static class HttpParser
         int? maxRequestTargetSize,
         int maxRequestHeadersSize)
     {
-        // Request line — fast exit before any allocation if incomplete.
-        if (!parser.TryReadTo(out ReadOnlySequence<byte> requestLine, "\r\n"u8))
+        // Request line — skip leading CRLFs (RFC 9112 §2.2 robustness)
+        ReadOnlySequence<byte> requestLine;
+        while (true)
         {
-            return HttpParseResult.Incomplete;
+            if (!parser.TryReadTo(out requestLine, "\r\n"u8))
+            {
+                return HttpParseResult.Incomplete;
+            }
+
+            if (requestLine.Length > 0)
+            {
+                break;
+            }
         }
 
         // Determine required buffer size for path + query + headers.
@@ -176,6 +190,16 @@ internal static class HttpParser
                 break; // empty line = end of headers
             }
 
+            // Reject obs-fold (RFC 9112 §5.2)
+            if (headerLine.FirstSpan.Length > 0)
+            {
+                var firstByte = headerLine.FirstSpan[0];
+                if (firstByte is (byte)' ' or (byte)'\t')
+                {
+                    return HttpParseResult.Invalid;
+                }
+            }
+
             if (headerLine.Length > 15 && (headerLine.FirstSpan[0] | 0x20) == (byte)'c')
             {
                 var contentLengthResult = TrackContentLength(headerLine, req);
@@ -185,9 +209,10 @@ internal static class HttpParser
                 }
             }
 
-            if (!ParseHeaderLine(headerLine, ref req.Headers))
+            var headerResult = ParseHeaderLine(headerLine, ref req.Headers);
+            if (headerResult != HttpParseResult.Success)
             {
-                return HttpParseResult.HeaderFieldsTooLarge;
+                return headerResult;
             }
         }
 
@@ -221,9 +246,10 @@ internal static class HttpParser
         {
             return HttpParseResult.Invalid;
         }
-        else if ((req.Method == HttpMethod.Post || req.Method == HttpMethod.Put) && !req.HasContentLength)
+        else if ((req.Method == HttpMethod.Post || req.Method == HttpMethod.Put || req.Method == HttpMethod.Patch) && !req.HasContentLength)
         {
             // RFC 7231 §6.5.10: 411 Length Required.
+            // PATCH (RFC 5789) also requires a body.
             return HttpParseResult.LengthRequired;
         }
 
@@ -451,7 +477,7 @@ internal static class HttpParser
     /// </summary>
     /// <param name="seq">The sequence of bytes representing the header line to parse.</param>
     /// <param name="headers">The collection of HTTP headers to which the parsed header will be added.</param>
-    private static bool ParseHeaderLine(ReadOnlySequence<byte> seq, ref HttpHeaders headers)
+    private static HttpParseResult ParseHeaderLine(ReadOnlySequence<byte> seq, ref HttpHeaders headers)
     {
         if (seq.IsSingleSegment)
         {
@@ -477,18 +503,76 @@ internal static class HttpParser
     /// </summary>
     /// <param name="line">The span representing a line containing the header name and value separated by a colon.</param>
     /// <param name="headers">The reference to the header collection where the parsed name-value pair should be added.</param>
-    private static bool AddHeaderFromSpan(ReadOnlySpan<byte> line, ref HttpHeaders headers)
+    private static HttpParseResult AddHeaderFromSpan(ReadOnlySpan<byte> line, ref HttpHeaders headers)
     {
         var colon = line.IndexOf((byte)':');
         if (colon <= 0)
         {
-            return true;
+            return HttpParseResult.Success;
         }
 
         var name = line[..colon];
+
+        // RFC 9112 §5: No whitespace allowed between field-name and colon.
+        if (name[^1] is (byte)' ' or (byte)'\t')
+        {
+            return HttpParseResult.Invalid;
+        }
+
+        // RFC 9110 §5.1: Field name must be a valid token (tchar characters only).
+        if (!IsValidToken(name))
+        {
+            return HttpParseResult.Invalid;
+        }
+
         var value = line[(colon + 1)..].Trim((byte)' ');
 
-        return headers.Add(name, value);
+        return headers.Add(name, value) ? HttpParseResult.Success : HttpParseResult.HeaderFieldsTooLarge;
+    }
+
+    /// <summary>
+    /// Determines whether the specified span of bytes represents a valid token
+    /// as defined by the HTTP specification. A valid token consists only of tchar
+    /// characters.
+    /// </summary>
+    /// <param name="span">
+    /// A read-only span of bytes representing the token to validate.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> if the span contains only valid tchar characters; otherwise, <c>false</c>.
+    /// </returns>
+    private static bool IsValidToken(ReadOnlySpan<byte> span)
+    {
+        foreach (var b in span)
+        {
+            if (!IsTChar(b))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Determines whether the specified character is a valid "tchar" as defined by the HTTP/1.1 specification.
+    /// A "tchar" is any token character allowed in headers, which includes alphanumeric characters and
+    /// a set of specific symbols.
+    /// </summary>
+    /// <param name="chr">The character to be evaluated.</param>
+    /// <returns>
+    /// <c>true</c> if the character is a valid "tchar"; otherwise, <c>false</c>.
+    /// </returns
+    private static bool IsTChar(byte chr)
+    {
+        // tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+        //         "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+        return (uint)(chr - 'a') <= 'z' - 'a' ||
+               (uint)(chr - 'A') <= 'Z' - 'A' ||
+               (uint)(chr - '0') <= 9 ||
+               chr is (byte)'!' or (byte)'#' or (byte)'$' or (byte)'%' or (byte)'&' or (byte)'\'' or
+                    (byte)'*' or (byte)'+' or (byte)'-' or (byte)'.' or (byte)'^' or (byte)'_' or
+                    (byte)'`' or (byte)'|' or (byte)'~';
     }
 
     /// <summary>
