@@ -73,7 +73,7 @@ TCP bytes
 | `src/Anka/src/Core/` | `Server.cs`, `HttpRequest.cs`, `HttpResponseWriter.cs`, `HttpHeaders.cs`, `HttpHeaderNames.cs`, `HttpMethod.cs`, `HttpVersion.cs`, `ServerOptions.cs` | Public API; everything a user imports |
 | `src/Anka/src/Internal/` | `Connection.cs`, `HttpParser.cs`, `HttpRequestPool.cs`, `SocketReceiver.cs`, `ChunkedBodyParser.cs`, `HttpMethodParser.cs`, `HttpVersionParser.cs` | Implementation; hidden from users; tested via `InternalsVisibleTo` |
 | `src/Anka/src/Exceptions/` | `AnkaArgumentException.cs`, `AnkaOutOfRangeException.cs` | Domain-specific exception types |
-| `Test/Anka.Test/` | 242 unit tests across 13 files | Full parser, transport, limits, validation coverage |
+| `Test/Anka.Test/` | 254 unit tests across 16 files | Full parser, transport, limits, RFC validation coverage |
 | `Benchmark/Anka.Benchmark/` | `HttpParserBenchmarks.cs`, etc. | BenchmarkDotNet micro-benchmarks (target: zero allocation) |
 
 ---
@@ -162,7 +162,7 @@ await res.WriteAsync(status, body, contentType, keepAlive: request.IsKeepAlive, 
 # Build (all projects)
 dotnet build Anka.slnx --nologo
 
-# Full test suite (242 tests)
+# Full test suite (254 tests)
 dotnet test Anka.slnx --nologo
 
 # Single test by name

@@ -332,8 +332,10 @@ Anka targets HTTP/1.x and implements the following behaviour from the core HTTP 
 | HTTP/1.0 and HTTP/1.1 | Both versions parsed and handled | §2.6 |
 | Request-target forms | Origin (`/path`), absolute (`http://host/path`), authority (`host:port` for CONNECT), asterisk (`*` for OPTIONS) | §5.3 |
 | Host header validation | Required for HTTP/1.1; missing / duplicate / mismatched Host → `400` | §5.4 |
-| Content-Length | Parsed and validated; conflicting duplicates → `400`; malformed values → `400` | §3.3.2 |
+| Content-Length | Parsed and validated; conflicting duplicates → `400`; malformed values → `400`; missing for POST/PUT/PATCH → `411` | §3.3.2 |
 | Transfer-Encoding: chunked | Chunk-size parsing (hex), chunk data + CRLF validation, trailer headers, body reassembly into `req.Body` | §4.1 |
+| Chunked response encoding | Supported via `response.GetStream()` — returns a `Stream` that sends `Transfer-Encoding: chunked`; headers + terminating chunk managed automatically | §4.1 |
+| Response trailer headers | Supported via `stream.AddTrailer(header)` when using `response.GetStream()` | §4.1.2 |
 | Expect: 100-continue | Automatic `100 Continue` interim response before body read | §5.1.1 |
 | Connection management | HTTP/1.1 keep-alive by default; HTTP/1.0 close by default; `Connection: close` / `keep-alive` honoured | §6.1, §6.3 |
 | Header normalisation | Names lowercased on ingestion; repeated headers enumerable via `TryGetAllValues(...)` | §3.2.2 |
@@ -344,7 +346,7 @@ Anka targets HTTP/1.x and implements the following behaviour from the core HTTP 
 | Feature | Behaviour | Reference |
 |---|---|---|
 | Methods | GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH | §4 |
-| Status codes | Full reason-phrase mapping for common codes (200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 405, 413, 414, 431, 500, 501, 503, 505) | §6 |
+| Status codes | Full reason-phrase mapping for common codes (200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 405, 411, 413, 414, 417, 431, 500, 501, 503, 505) | §6 |
 
 ### Supported (RFC 3986 — URI Syntax)
 
@@ -361,7 +363,8 @@ Anka returns the following automatic error responses before the user handler run
 | Status | Condition | Behaviour |
 |---|---|---|
 | `100 Continue` | `Expect: 100-continue` header present | Sent before reading the request body |
-| `400 Bad Request` | Malformed request line, unrecognised method, invalid headers, conflicting `Content-Length`, missing/invalid `Host`, malformed HTTP version token | Connection closed |
+| `400 Bad Request` | Malformed request line, unrecognised method, invalid headers (e.g. malformed name, obs-fold), conflicting `Content-Length`, missing/invalid `Host`, malformed HTTP version token | Connection closed |
+| `411 Length Required` | POST, PUT, or PATCH request missing `Content-Length` or `Transfer-Encoding` | Connection closed |
 | `413 Payload Too Large` | Body exceeds `ServerOptions.MaxRequestBodySize` | Connection closed |
 | `414 URI Too Long` | Request-target exceeds `ServerOptions.MaxRequestTargetSize` | Connection closed |
 | `431 Request Header Fields Too Large` | Headers exceed `ServerOptions.MaxRequestHeadersSize` (default 8 KB) or header count > 64 | Connection closed |
@@ -385,8 +388,6 @@ Anka returns the following automatic error responses before the user handler run
 | TLS / HTTPS | Not built-in — terminate TLS at a reverse proxy |
 | WebSocket upgrade | Not implemented |
 | Content-Encoding (gzip, deflate, br) | Not built-in — decompress in user code |
-| Chunked *response* encoding | Supported via `response.GetStream()` — returns a `Stream` that sends `Transfer-Encoding: chunked`; headers + terminating chunk managed automatically |
-| Trailer headers in *responses* | Supported via `stream.AddTrailer(header)` when using `response.GetStream()` |
 | HTTP/0.9 | Rejected |
 
 ```
@@ -1062,7 +1063,7 @@ Anka/
 
 ## Test Coverage
 
-**246 tests** — all passing.
+**254 tests** — all passing.
 
 ```bash
 dotnet test Anka.slnx --nologo
@@ -1078,6 +1079,7 @@ dotnet test Anka.slnx --nologo
 | `ContentLengthValidationTests` | 15 | Content-Length parsing, conflicts, malformed values |
 | `CustomResponseHeaderTests` | 14 | Default/extra response headers, security headers |
 | `ChunkedBodyParserTests` | 12 | Chunk parsing, trailers, overflow, invalid chunks |
+| `RfcComplianceTests` | 8 | RFC-specific edge cases, obs-fold, trailers, skip CRLF |
 | `RequestHeaderAndVersionValidationTests` | 10 | Host validation, HTTP version errors, 400/505 |
 | `RequestBodySizeLimitTests` | 10 | Body size enforcement, 413 responses |
 | `HttpVersionParserTests` | 8 | Version parsing, malformed token detection |
