@@ -380,14 +380,23 @@ Anka returns the following automatic error responses before the user handler run
 | Header count | 64 | — (hard limit) | `431` |
 | Idle read timeout | None | `ReadTimeout` | Connection closed silently |
 
+### Roadmap & Upcoming Features
+
+Anka targets ~90% RFC 9110/9112 compliance for the core protocol. The following features are prioritized for upcoming releases:
+
+- [ ] **Range Requests (RFC 9110 §14):** Support for `Range` and `If-Range` headers to enable partial content delivery (critical for video streaming and large file resumes).
+- [ ] **Caching Validation (RFC 9111):** Automatic handling of `ETag` and `If-None-Match` to return `304 Not Modified` at the framework level.
+- [ ] **Multipart Parser:** A zero-allocation utility for parsing `multipart/form-data` bodies.
+
 ### Not Supported / Out of Scope
 
 | Feature | Status |
 |---|---|
 | HTTP/2, HTTP/3 | Not planned — HTTP/1.x only |
 | TLS / HTTPS | Not built-in — terminate TLS at a reverse proxy |
-| WebSocket upgrade | Not implemented |
+| WebSocket upgrade | Not implemented (requires `Upgrade` header support) |
 | Content-Encoding (gzip, deflate, br) | Not built-in — decompress in user code |
+| Content Negotiation | Partial — headers available, but no automated selection engine |
 | HTTP/0.9 | Rejected |
 
 ```

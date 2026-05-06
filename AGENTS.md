@@ -270,6 +270,16 @@ await client.ConnectAsync(IPAddress.Loopback, server.Port);
 
 ---
 
+## Strategic Roadmap
+
+The primary goal is to reach **~90% RFC 9110/9112 compliance** while maintaining zero-allocation.
+
+1. **Range Requests (Next Priority):** Implement `Range` and `If-Range` support. This requires modifying `HttpResponseWriter` to handle partial slices and `206 Partial Content` status.
+2. **Automated Cache Validation:** Implement internal logic to compare `If-None-Match` with provided `ETag` and automatically return `304`.
+3. **Multipart Parsing:** Add a specialized, zero-allocation parser for `multipart/form-data`.
+
+---
+
 ## Document References
 
 - **Architecture:** Lines 393–426 of README (box diagram + data flow)
