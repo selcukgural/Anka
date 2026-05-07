@@ -329,7 +329,7 @@ Anka targets HTTP/1.x and implements the following behaviour from the core HTTP 
 
 | Feature | Behaviour | Reference |
 |---|---|---|
-| HTTP/1.0 and HTTP/1.1 | Both versions parsed and handled | §2.6 |
+| HTTP/1.0 and HTTP/1.1 | Both versions parsed and handled; dynamic response versioning | §2.6 |
 | Request-target forms | Origin (`/path`), absolute (`http://host/path`), authority (`host:port` for CONNECT), asterisk (`*` for OPTIONS) | §5.3 |
 | Host header validation | Required for HTTP/1.1; missing / duplicate / mismatched Host → `400` | §5.4 |
 | Content-Length | Parsed and validated; conflicting duplicates → `400`; malformed values → `400`; missing for POST/PUT/PATCH → `411` | §3.3.2 |

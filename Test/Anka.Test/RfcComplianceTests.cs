@@ -88,6 +88,20 @@ public class RfcComplianceTests
     }
 
     [Fact]
+    public async Task Response_Http10_ReturnsHttp10Version()
+    {
+        await using var server = await TestServer.StartAsync(async (req, res, ct) =>
+        {
+            await res.WriteAsync(200, "OK"u8.ToArray(), "text/plain"u8.ToArray(), false, ct);
+        });
+
+        var request = "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n";
+        var response = await SendRawAsync(server.Port, request);
+
+        Assert.StartsWith("HTTP/1.0 200 OK", response);
+    }
+
+    [Fact]
     public async Task Request_Trailers_AreParsed()
     {
         ReadOnlyMemory<byte> trailerValueMemory = default;

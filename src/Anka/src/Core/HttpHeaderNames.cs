@@ -21,6 +21,8 @@ public static class HttpHeaderNames
     public static ReadOnlySpan<byte> CacheControl => "cache-control"u8;
     public static ReadOnlySpan<byte> Cookie => "cookie"u8;
     public static ReadOnlySpan<byte> Expect => "expect"u8;
+    public static ReadOnlySpan<byte> Range => "range"u8;
+    public static ReadOnlySpan<byte> IfRange => "if-range"u8;
     public static ReadOnlySpan<byte> IfMatch => "if-match"u8;
     public static ReadOnlySpan<byte> IfNoneMatch => "if-none-match"u8;
     public static ReadOnlySpan<byte> IfModifiedSince => "if-modified-since"u8;
@@ -40,6 +42,8 @@ public static class HttpHeaderNames
     public static ReadOnlySpan<byte> WwwAuthenticate => "www-authenticate"u8;
     public static ReadOnlySpan<byte> Allow => "allow"u8;
     public static ReadOnlySpan<byte> RetryAfter => "retry-after"u8;
+    public static ReadOnlySpan<byte> ContentRange => "content-range"u8;
+    public static ReadOnlySpan<byte> AcceptRanges => "accept-ranges"u8;
     public static ReadOnlySpan<byte> Chunked => "chunked"u8;
 
     #endregion

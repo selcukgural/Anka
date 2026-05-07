@@ -27,6 +27,8 @@ public sealed class HttpResponseWriter : IDisposable
 
     private readonly Socket _socket;
     private bool _suppressResponseBody;
+    private HttpVersion _version = HttpVersion.Http11;
+    private HttpHeaders _requestHeaders;
     private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
     private static readonly byte[] Continue100Response = "HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray();
 
@@ -60,6 +62,18 @@ public sealed class HttpResponseWriter : IDisposable
     /// Pass <c>true</c> to prevent the body from being written, or <c>false</c> to allow it.
     /// </param>
     internal void SetSuppressResponseBody(bool suppressResponseBody) => _suppressResponseBody = suppressResponseBody;
+
+    /// <summary>
+    /// Configures the HTTP version for the response.
+    /// </summary>
+    /// <param name="version">The HTTP version to use for the response.</param>
+    internal void SetVersion(HttpVersion version) => _version = version;
+
+    /// <summary>
+    /// Configures the request headers for automatic cache validation.
+    /// </summary>
+    /// <param name="headers">The HTTP headers of the current request.</param>
+    internal void SetRequestHeaders(HttpHeaders headers) => _requestHeaders = headers;
 
     /// <summary>
     /// Sends an HTTP/1.1 "100 Continue" response to indicate that the client should proceed with the request.
@@ -148,7 +162,62 @@ public sealed class HttpResponseWriter : IDisposable
     public ValueTask WriteAsync(int statusCode, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte> contentType, bool keepAlive,
                                 ReadOnlySpan<HttpHeader> extraHeaders, CancellationToken cancellationToken = default)
     {
-        const int headerEstimate = 512;
+        return WriteInternalAsync(statusCode, body, contentType, keepAlive, extraHeaders, -1, -1, -1, cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes a partial HTTP response (206 Partial Content) with the specified byte range.
+    /// </summary>
+    /// <param name="rangeStart">The starting byte offset of the range.</param>
+    /// <param name="rangeEnd">The ending byte offset of the range (inclusive).</param>
+    /// <param name="totalLength">The total length of the full entity body.</param>
+    /// <param name="body">The partial body bytes matching the range.</param>
+    /// <param name="contentType">The Content-Type header value bytes.</param>
+    /// <param name="keepAlive">Whether to maintain the connection.</param>
+    /// <param name="extraHeaders">Optional extra headers.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A ValueTask representing the operation.</returns>
+    public ValueTask WritePartialAsync(long rangeStart, long rangeEnd, long totalLength, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte> contentType, bool keepAlive = true,
+                                       ReadOnlySpan<HttpHeader> extraHeaders = default, CancellationToken cancellationToken = default)
+    {
+        return WriteInternalAsync(206, body, contentType, keepAlive, extraHeaders, rangeStart, rangeEnd, totalLength, cancellationToken);
+    }
+
+    /// <summary>
+    /// Handles the internal logic for writing HTTP responses, including headers and optional body content.
+    /// </summary>
+    /// <param name="statusCode">The HTTP status code to include in the response.</param>
+    /// <param name="body">The response body content, represented as a read-only memory block.</param>
+    /// <param name="contentType">The content type header value, represented as a read-only memory block.</param>
+    /// <param name="keepAlive">Indicates whether the connection should be kept alive after the response is sent.</param>
+    /// <param name="extraHeaders">A span of additional HTTP headers to include in the response.</param>
+    /// <param name="rangeStart">The starting byte position for a partial content response, or -1 for a full response.</param>
+    /// <param name="rangeEnd">The ending byte position for a partial content response, or -1 for a full response.</param>
+    /// <param name="totalLength">The total size of the content for a partial content response, or -1 for a full response.</param>
+    /// <param name="cancellationToken">A cancellation token that allows the operation to be canceled.</param>
+    /// <returns>A <see cref="ValueTask"/> representing the asynchronous write operation.</returns>
+    private ValueTask WriteInternalAsync(int statusCode, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte> contentType, bool keepAlive,
+                                         ReadOnlySpan<HttpHeader> extraHeaders, long rangeStart, long rangeEnd, long totalLength, CancellationToken cancellationToken)
+    {
+        // Cache validation (RFC 9111)
+        if (statusCode == 200)
+        {
+            if (_requestHeaders.TryGetValue(HttpHeaderNames.IfNoneMatch, out var ifNoneMatch))
+            {
+                if (TryGetHeader(extraHeaders, HttpHeaderNames.ETag, out var etag) ||
+                    TryGetHeader(_defaultHeaders, HttpHeaderNames.ETag, out etag))
+                {
+                    // Basic exact match check. RFC says If-None-Match can be a list of ETags.
+                    if (ifNoneMatch.SequenceEqual(etag))
+                    {
+                        statusCode = 304;
+                        body = default;
+                    }
+                }
+            }
+        }
+
+        const int headerEstimate = 512 + 64; // added room for Content-Range
         var suppressBody = _suppressResponseBody || IsBodyForbiddenStatus(statusCode);
         var smallBodyThreshold = !suppressBody && body.Length <= 4096 ? body.Length : 0;
 
@@ -176,7 +245,7 @@ public sealed class HttpResponseWriter : IDisposable
             buf = tempBuf;
         }
 
-        var pos = BuildHeaderBlock(buf, statusCode, body.Length, false, keepAlive, contentType, _defaultHeaders, extraHeaders, smallBodyThreshold, body.Span);
+        var pos = BuildHeaderBlock(buf, _version, statusCode, body.Length, false, keepAlive, contentType, _defaultHeaders, extraHeaders, smallBodyThreshold, body.Span, rangeStart, rangeEnd, totalLength);
 
         // Fast synchronous path: try sending without async state machine.
         if (smallBodyThreshold > 0 || body.IsEmpty || suppressBody)
@@ -229,7 +298,7 @@ public sealed class HttpResponseWriter : IDisposable
             buf = tempBuf;
         }
 
-        var pos = BuildHeaderBlock(buf, statusCode, 0, true, keepAlive, contentType, _defaultHeaders, extraHeaders, 0);
+        var pos = BuildHeaderBlock(buf, _version, statusCode, 0, true, keepAlive, contentType, _defaultHeaders, extraHeaders, 0);
 
         return SendSingleBuffer(buf, pos, tempBuf, cancellationToken);
     }
@@ -538,7 +607,9 @@ public sealed class HttpResponseWriter : IDisposable
 
     // Pre-cached header prefix for the most common case: 200 OK + keep-alive.
     // "HTTP/1.1 200 OK\r\nServer: Anka\r\n" — 30 bytes, never changes.
-    private static ReadOnlySpan<byte> Ok200Prefix => "HTTP/1.1 200 OK\r\nServer: Anka\r\n"u8;
+    private static ReadOnlySpan<byte> Ok200Prefix11 => "HTTP/1.1 200 OK\r\nServer: Anka\r\n"u8;
+    // "HTTP/1.0 200 OK\r\nServer: Anka\r\n" — 30 bytes, never changes.
+    private static ReadOnlySpan<byte> Ok200Prefix10 => "HTTP/1.0 200 OK\r\nServer: Anka\r\n"u8;
     private static ReadOnlySpan<byte> KeepAliveHeader => "Connection: keep-alive\r\n"u8;
     private static ReadOnlySpan<byte> CloseHeader => "Connection: close\r\n"u8;
     private static ReadOnlySpan<byte> ContentLengthName => "Content-Length: "u8;
@@ -596,8 +667,9 @@ public sealed class HttpResponseWriter : IDisposable
     /// Writes the header block (and optionally an inline small body) into <paramref name="buf"/>
     /// and returns the number of bytes written.
     /// </summary>
-    private static int BuildHeaderBlock(byte[] buf, int statusCode, int bodyLength, bool isChunked, bool keepAlive, ReadOnlyMemory<byte> contentType,
-                                        IReadOnlyList<HttpHeader> defaultHeaders, ReadOnlySpan<HttpHeader> extraHeaders, int smallBodyThreshold, ReadOnlySpan<byte> body = default)
+    private static int BuildHeaderBlock(byte[] buf, HttpVersion version, int statusCode, int bodyLength, bool isChunked, bool keepAlive, ReadOnlyMemory<byte> contentType,
+                                        IReadOnlyList<HttpHeader> defaultHeaders, ReadOnlySpan<HttpHeader> extraHeaders, int smallBodyThreshold, ReadOnlySpan<byte> body = default,
+                                        long rangeStart = -1, long rangeEnd = -1, long totalLength = -1)
     {
         var span = buf.AsSpan();
         var pos = 0;
@@ -606,13 +678,23 @@ public sealed class HttpResponseWriter : IDisposable
         // Fast path: 200 OK is overwhelmingly common — single copy for status + server.
         if (statusCode == 200)
         {
-            Ok200Prefix.CopyTo(span);
-            pos = Ok200Prefix.Length;
+            var prefix = version == HttpVersion.Http10 ? Ok200Prefix10 : Ok200Prefix11;
+            prefix.CopyTo(span);
+            pos = prefix.Length;
+
+            // Advertise range support for 200 OK
+            WriteLiteral(HttpHeaderNames.AcceptRanges, span, ref pos);
+            WriteLiteral(": bytes\r\n"u8, span, ref pos);
         }
         else
         {
-            WriteStatusLine(statusCode, span, ref pos);
+            WriteStatusLine(version, statusCode, span, ref pos);
             WriteLiteral("Server: Anka\r\n"u8, span, ref pos);
+        }
+
+        if (rangeStart != -1)
+        {
+            WriteContentRange(rangeStart, rangeEnd, totalLength, span, ref pos);
         }
 
         if (!forbidBodyHeaders)
@@ -684,6 +766,87 @@ public sealed class HttpResponseWriter : IDisposable
     }
 
     /// <summary>
+    /// Writes the Content-Range header with the specified range information into the provided buffer.
+    /// </summary>
+    /// <param name="start">The starting byte position of the range.</param>
+    /// <param name="end">The ending byte position of the range.</param>
+    /// <param name="totalLength">The total length of the resource.</param>
+    /// <param name="span">The buffer where the Content-Range header should be written.</param>
+    /// <param name="pos">The current position in the buffer, which will be updated as the header is written.</param>
+    private static void WriteContentRange(long start, long end, long totalLength, Span<byte> span, ref int pos)
+    {
+        WriteLiteral(HttpHeaderNames.ContentRange, span, ref pos);
+        WriteLiteral(": bytes "u8, span, ref pos);
+        Utf8Formatter.TryFormat(start, span[pos..], out var written);
+        pos += written;
+        span[pos++] = (byte)'-';
+        Utf8Formatter.TryFormat(end, span[pos..], out var written2);
+        pos += written2;
+        span[pos++] = (byte)'/';
+        Utf8Formatter.TryFormat(totalLength, span[pos..], out var written3);
+        pos += written3;
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+    }
+
+    /// <summary>
+    /// Attempts to retrieve the value of a header with the specified name from a collection of HTTP headers.
+    /// </summary>
+    /// <param name="headers">The collection of HTTP headers to search.</param>
+    /// <param name="name">The name of the header to find.</param>
+    /// <param name="value">
+    /// When the method returns, contains the value of the header if found; otherwise, contains the default value for <see cref="ReadOnlySpan{T}"/>.
+    /// </param>
+    /// <returns>
+    /// True if the header with the specified name is found in the collection; otherwise, false.
+    /// </returns>
+    private static bool TryGetHeader(ReadOnlySpan<HttpHeader> headers, ReadOnlySpan<byte> name, out ReadOnlySpan<byte> value)
+    {
+        foreach (var h in headers)
+        {
+            if (!h.Name.Span.SequenceEqual(name))
+            {
+                continue;
+            }
+            
+            value = h.Value.Span;
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Attempts to find a header with the specified name in the provided list of headers.
+    /// </summary>
+    /// <param name="headers">The list of HTTP headers to search within.</param>
+    /// <param name="name">The name of the header to search for, represented as a read-only span of bytes.</param>
+    /// <param name="value">
+    /// When this method returns, contains the value of the header if found, represented as a read-only span of bytes;
+    /// otherwise, contains the default value.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> if a header with the specified name was found; otherwise, <c>false</c>.
+    /// </returns>
+    private static bool TryGetHeader(IReadOnlyList<HttpHeader> headers, ReadOnlySpan<byte> name, out ReadOnlySpan<byte> value)
+    {
+        foreach (var h in headers)
+        {
+            if (!h.Name.Span.SequenceEqual(name))
+            {
+                continue;
+            }
+            
+            value = h.Value.Span;
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
+
+    /// <summary>
     /// Writes an HTTP header into the provided span buffer at the specified position.
     /// </summary>
     /// <param name="h">The <see cref="HttpHeader"/> containing the header name and value to be written.</param>
@@ -705,6 +868,7 @@ public sealed class HttpResponseWriter : IDisposable
     /// Writes the HTTP status line to the provided buffer with the specified status code.
     /// The status line includes the HTTP version, status code, and reason phrase.
     /// </summary>
+    /// <param name="version">The HTTP version to use in the status line.</param>
     /// <param name="statusCode">
     /// The HTTP status code to be included in the status line (e.g., 200 for OK, 404 for Not Found).
     /// </param>
@@ -716,9 +880,17 @@ public sealed class HttpResponseWriter : IDisposable
     /// A reference to the current writing position in the buffer. This value will be updated
     /// to reflect the new position after the write operation.
     /// </param>
-    private static void WriteStatusLine(int statusCode, Span<byte> buf, ref int pos)
+    private static void WriteStatusLine(HttpVersion version, int statusCode, Span<byte> buf, ref int pos)
     {
-        WriteLiteral("HTTP/1.1 "u8, buf, ref pos);
+        if (version == HttpVersion.Http10)
+        {
+            WriteLiteral("HTTP/1.0 "u8, buf, ref pos);
+        }
+        else
+        {
+            WriteLiteral("HTTP/1.1 "u8, buf, ref pos);
+        }
+
         Utf8Formatter.TryFormat(statusCode, buf[pos..], out var written);
         pos += written;
         buf[pos++] = (byte)' ';
@@ -751,6 +923,7 @@ public sealed class HttpResponseWriter : IDisposable
         200 => "OK"u8,
         201 => "Created"u8,
         204 => "No Content"u8,
+        206 => "Partial Content"u8,
         301 => "Moved Permanently"u8,
         302 => "Found"u8,
         304 => "Not Modified"u8,

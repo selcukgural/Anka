@@ -1147,6 +1147,58 @@ internal static class HttpParser
     }
 
     /// <summary>
+    /// Attempts to parse an HTTP Byte-Range header value.
+    /// Handles offset ranges (bytes=start-), suffix ranges (bytes=-last), and specific ranges (bytes=start-end).
+    /// </summary>
+    /// <param name="value">The raw bytes of the Range header value.</param>
+    /// <param name="start">When this method returns, contains the start offset, or -1 if not specified.</param>
+    /// <param name="end">When this method returns, contains the end offset (inclusive), or -1 if not specified.</param>
+    /// <returns>True if the range was successfully parsed; otherwise, false.</returns>
+    public static bool TryParseRange(ReadOnlySpan<byte> value, out long start, out long end)
+    {
+        start = -1;
+        end = -1;
+
+        if (value.Length < 7 || !value.StartsWith("bytes="u8))
+        {
+            return false;
+        }
+
+        var rangePart = value[6..];
+        var dashIndex = rangePart.IndexOf((byte)'-');
+        if (dashIndex == -1)
+        {
+            return false;
+        }
+
+        var startPart = rangePart[..dashIndex].Trim((byte)' ');
+        var endPart = rangePart[(dashIndex + 1)..].Trim((byte)' ');
+
+        if (!startPart.IsEmpty)
+        {
+            if (!Utf8Parser.TryParse(startPart, out start, out _))
+            {
+                return false;
+            }
+        }
+
+        if (!endPart.IsEmpty)
+        {
+            if (!Utf8Parser.TryParse(endPart, out end, out _))
+            {
+                return false;
+            }
+        }
+
+        // Validity check: if both specified, start must be <= end.
+        // At least one must be specified.
+        if (start == -1 && end == -1) return false;
+        if (start != -1 && end != -1 && start > end) return false;
+
+        return true;
+    }
+
+    /// <summary>
     /// Compares two ASCII byte sequences for equality, ignoring a case.
     /// Returns true if the sequences are equal in a case-insensitive manner; otherwise, returns false.
     /// </summary>
@@ -1155,7 +1207,7 @@ internal static class HttpParser
     /// <returns>
     /// A boolean value indicating whether the two ASCII byte sequences are equal, ignoring the case.
     /// </returns>
-    private static bool AsciiEqualsIgnoreCase(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    internal static bool AsciiEqualsIgnoreCase(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
     {
         if (a.Length != b.Length)
         {

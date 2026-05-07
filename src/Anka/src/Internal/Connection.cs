@@ -113,6 +113,9 @@ internal sealed class Connection
                         break; // incomplete request — wait for more bytes
                     }
 
+                    writer.SetVersion(request.Version);
+                    writer.SetRequestHeaders(request.Headers);
+
                     switch (parseResult)
                     {
                         case HttpParseResult.Invalid or HttpParseResult.ConflictingContentLength or HttpParseResult.MissingHostHeader:
