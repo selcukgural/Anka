@@ -765,12 +765,7 @@ internal static class HttpParser
             }
         }
 
-        if (!TryParseAuthority(hostValue, requirePort: false, out _))
-        {
-            return HttpParseResult.Invalid;
-        }
-
-        if (request.RequestTargetForm == RequestTargetForm.Absolute &&
+        if (!TryParseAuthority(hostValue, requirePort: false, out _) || request.RequestTargetForm == RequestTargetForm.Absolute &&
             !AuthoritiesEquivalent(request.AuthorityBytes, request.AbsoluteFormScheme, hostValue))
         {
             return HttpParseResult.Invalid;
@@ -1192,10 +1187,12 @@ internal static class HttpParser
 
         // Validity check: if both specified, start must be <= end.
         // At least one must be specified.
-        if (start == -1 && end == -1) return false;
-        if (start != -1 && end != -1 && start > end) return false;
-
-        return true;
+        if (start == -1 && end == -1)
+        {
+            return false;
+        }
+        
+        return start == -1 || end == -1 || start <= end;
     }
 
     /// <summary>
