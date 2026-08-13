@@ -356,6 +356,21 @@ Anka targets HTTP/1.x and implements the following behaviour from the core HTTP 
 | Authority validation | IPv6 literals (`[::1]`), IPv4 addresses, domain reg-names, port range 0–65535 | §3.2 |
 | Host ↔ absolute-form consistency | Host header must match the authority in an absolute-form request-target | §5.4 (7230) |
 
+### Supported (RFC 9110 / RFC 9111 — Range Requests & Caching)
+
+| Feature | Behaviour | Reference |
+|---|---|---|
+| Range requests | `HttpResponseWriter.WritePartialAsync(rangeStart, rangeEnd, totalLength, ...)` sends `206 Partial Content` with `Content-Range` and `Accept-Ranges` headers | §14.2, §14.4 |
+| Conditional caching (`If-None-Match`) | Request's `If-None-Match` is compared against the response's `ETag` header (exact match only, not the full list-of-ETags grammar); on match, status is downgraded to `304 Not Modified` and the body is suppressed automatically | RFC 9111 §4.3.2 |
+
+Not yet implemented: `If-Range` conditional revalidation (the header name constant exists but no logic reads it), and `Range` is not automatically parsed/validated from the request — the caller computes `rangeStart`/`rangeEnd` and calls `WritePartialAsync` itself.
+
+### Supported (Multipart)
+
+| Feature | Behaviour | Reference |
+|---|---|---|
+| `multipart/form-data` parsing | `MultipartParser` (internal `ref struct`) splits a body by boundary into parts via `TryReadNextPart`, and reads `Content-Disposition` `name`/`filename` per part — zero-allocation | RFC 7578 |
+
 ### Error Responses
 
 Anka returns the following automatic error responses before the user handler runs:
@@ -382,11 +397,13 @@ Anka returns the following automatic error responses before the user handler run
 
 ### Roadmap & Upcoming Features
 
-Anka targets ~90% RFC 9110/9112 compliance for the core protocol. The following features are prioritized for upcoming releases:
+Anka targets ~90% RFC 9110/9112 compliance for the core protocol.
 
-- [ ] **Range Requests (RFC 9110 §14):** Support for `Range` and `If-Range` headers to enable partial content delivery (critical for video streaming and large file resumes).
-- [ ] **Caching Validation (RFC 9111):** Automatic handling of `ETag` and `If-None-Match` to return `304 Not Modified` at the framework level.
-- [ ] **Multipart Parser:** A zero-allocation utility for parsing `multipart/form-data` bodies.
+- [x] **Range Requests (RFC 9110 §14):** `Range`-based partial content delivery via `WritePartialAsync` (`206` + `Content-Range`). `If-Range` is not yet handled.
+- [x] **Caching Validation (RFC 9111):** Automatic `If-None-Match` / `ETag` comparison, downgrading to `304 Not Modified`.
+- [x] **Multipart Parser:** Zero-allocation `multipart/form-data` parsing via `MultipartParser`.
+
+No further items are currently tracked on the roadmap.
 
 ### Not Supported / Out of Scope
 

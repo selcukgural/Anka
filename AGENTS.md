@@ -274,18 +274,22 @@ await client.ConnectAsync(IPAddress.Loopback, server.Port);
 
 The primary goal is to reach **~90% RFC 9110/9112 compliance** while maintaining zero-allocation.
 
-1. **Range Requests (Next Priority):** Implement `Range` and `If-Range` support. This requires modifying `HttpResponseWriter` to handle partial slices and `206 Partial Content` status.
-2. **Automated Cache Validation:** Implement internal logic to compare `If-None-Match` with provided `ETag` and automatically return `304`.
-3. **Multipart Parsing:** Add a specialized, zero-allocation parser for `multipart/form-data`.
+1. **Range Requests — Done.** `HttpResponseWriter.WritePartialAsync(rangeStart, rangeEnd, totalLength, ...)` sends `206 Partial Content` with `Content-Range`/`Accept-Ranges`. `If-Range` conditional revalidation is *not* implemented (the header name constant exists in `HttpHeaderNames`, but nothing reads it) — callers that want `If-Range` semantics must check it themselves before deciding whether to call `WritePartialAsync`.
+2. **Automated Cache Validation — Done.** `HttpResponseWriter` compares `If-None-Match` against the response's `ETag` header (exact match only) and auto-downgrades `200` → `304` with the body suppressed. See `Test/Anka.Test/CacheValidationTests.cs`.
+3. **Multipart Parsing — Done.** `src/Anka/src/Internal/MultipartParser.cs` is a zero-allocation `ref struct` parser for `multipart/form-data` (`TryReadNextPart`, `Content-Disposition` name/filename extraction). See `Test/Anka.Test/MultipartTests.cs`.
+
+No further items are currently tracked on the roadmap.
 
 ---
 
 ## Document References
 
-- **Architecture:** Lines 393–426 of README (box diagram + data flow)
-- **RFC Compliance:** Lines 324–390 of README (supported/unsupported features)
-- **Performance Targets:** Lines 855–970 of README (benchmarks + end-to-end results)
-- **Test Coverage:** Lines 1045–1067 of README (242 tests across 13 suites)
+- **Architecture:** Lines 420–453 of README (box diagram + data flow)
+- **RFC Compliance:** Lines 324–411 of README (supported/unsupported features)
+- **Performance Targets:** Lines 899–1015 of README (benchmarks + end-to-end results)
+- **Test Coverage:** Lines 1090–1116 of README (test suite table)
+
+Line numbers drift whenever README is edited — if they look off, re-grep the section headers rather than trusting the numbers blindly.
 
 ---
 
