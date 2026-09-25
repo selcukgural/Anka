@@ -51,9 +51,10 @@ Server.StartAsync()
 
 ### Buffer/allocation model
 
-- Per-connection, allocated once and reused: a 64 KB `ArrayPool` receive buffer (sliding window, compacted only when the tail fills), one `HttpRequest` from `HttpRequestPool` (a single-slot CAS pool — deliberately not `ConcurrentQueue`, which allocates), and the `HttpResponseWriter`'s `ArrayPool` write buffer.
-- Per-request: `HttpRequest.ResetForReuse()` reuses the same instance across requests on one connection; headers live in an inline fixed-size array inside the struct (no heap); the body is a `ReadOnlyMemory<byte>` slice into the rented receive buffer.
-- On connection close: `HttpRequest.Dispose()` and `SocketReceiver.Dispose()` return everything to the pools.
+- Per-connection, allocated once and reused: a 64 KB `ArrayPool` receive buffer (sliding window, compacted only when the tail fills), one `HttpRequest` from `HttpRequestPool` (a 32-slot CAS pool — deliberately not `ConcurrentQueue`, which allocates), and the `HttpResponseWriter`'s `ArrayPool` write buffer.
+- Per-request: `HttpRequest.ResetForReuse()` reuses the same instance across requests on one connection; headers live in an inline fixed-size array inside the struct (no heap); the body is a `ReadOnlyMemory<byte>` slice into the request's rented body buffer.
+- On connection close: `HttpRequestPool.Return` returns the request's body buffer to `ArrayPool` (the header buffer, ≤ 64 KB, stays with the pooled instance); `SocketReceiver`/`HttpResponseWriter` are disposed and the receive buffer is returned.
+- Request bodies are buffered in memory before the handler runs, into a body buffer that grows as bytes arrive (never pre-sized from `Content-Length`). `ServerOptions` defaults are deliberately safe: `MaxRequestBodySize` 30 MB, `ReadTimeout` 30 s, `RequestHeadersTimeout` 30 s (absolute header deadline against Slowloris).
 - Result: steady-state keep-alive traffic is zero-allocation. Any benchmark that shows nonzero allocated bytes is a regression — investigate before merging.
 
 ### Directory layout
@@ -87,7 +88,7 @@ var seq = new ReadOnlySequence<byte>(bytes);
 var reader = new SequenceReader<byte>(seq);
 var req = new HttpRequest();
 Assert.True(HttpParser.TryParse(ref reader, req) == HttpParseResult.Success);
-req.Return(); // always — a leaked request exhausts the single-slot pool for later tests
+req.Return(); // always — resets the request so later tests start clean
 ```
 
 Integration tests spin up a real server via the `TestServer` helper (see `TransportTests.cs` / `CustomResponseHeaderTests.cs`) and talk to it over a raw `TcpClient`:

@@ -20,10 +20,20 @@ internal sealed class Connection
     // Size of the per-connection receive buffer (64 KB)
     private const int BufferSize = 64 * 1024;
 
+    // Initial body-buffer reservation. The buffer then grows as body bytes actually arrive.
+    private const int InitialBodyBufferSize = 64 * 1024;
+
     private readonly Socket _socket;
     private readonly RequestHandler _handler;
     private readonly ServerOptions _serverOptions;
     private readonly CancellationToken _cancellationToken;
+
+    /// <summary>
+    /// Absolute deadline (<see cref="Environment.TickCount64"/>, ms) for receiving the rest of the
+    /// current request's header block, or 0 when no partial request is buffered. Set from
+    /// <see cref="ServerOptions.RequestHeadersTimeout"/> when the first bytes of a request arrive.
+    /// </summary>
+    private long _headersDeadline;
 
     /// <summary>
     /// Represents a network connection and encapsulates the logic for processing incoming requests.
@@ -68,7 +78,9 @@ internal sealed class Connection
         var request = HttpRequestPool.Rent();
         using var writer = new HttpResponseWriter(_socket, _serverOptions.DefaultResponseHeaders);
         using var receiver = new SocketReceiver();
-        using var readTimeoutCts = _serverOptions.ReadTimeout is not null ? new CancellationTokenSource() : null;
+        using var readTimeoutCts = _serverOptions.ReadTimeout is not null || _serverOptions.RequestHeadersTimeout is not null
+            ? new CancellationTokenSource()
+            : null;
 
         // Closing the socket aborts any pending SocketAsyncEventArgs operation,
         // which causes ReceiveAsync to throw SocketException — caught below.
@@ -110,8 +122,17 @@ internal sealed class Connection
 
                     if (parseResult == HttpParseResult.Incomplete)
                     {
+                        // A partial request is buffered: start the absolute header deadline so a
+                        // client trickling bytes cannot keep resetting the per-read timeout.
+                        if (_headersDeadline == 0 && _serverOptions.RequestHeadersTimeout is { } headersTimeout)
+                        {
+                            _headersDeadline = Environment.TickCount64 + (long)headersTimeout.TotalMilliseconds;
+                        }
+
                         break; // incomplete request — wait for more bytes
                     }
+
+                    _headersDeadline = 0;
 
                     writer.SetVersion(request.Version);
                     writer.SetRequestHeaders(request.Headers);
@@ -396,20 +417,59 @@ internal sealed class Connection
             return new BodyReadState(RequestBodyReadResult.TooLarge, parseOffset, end);
         }
 
-        EnsureBodyBufferCapacity(request, (int)request.ContentLength, 0);
-
         var bodyLength = (int)request.ContentLength;
-        var copied = 0;
-        if (parseOffset < end)
+        var copyState = await CopyBodyBytesAsync(receiver, buf, parseOffset, end, request, 0, bodyLength, readTimeoutCts);
+        if (copyState.Result != RequestBodyReadResult.Success)
         {
-            copied = Math.Min(bodyLength, end - parseOffset);
-            buf.AsSpan(parseOffset, copied).CopyTo(request.BodyBuffer!.AsSpan(0, copied));
-            parseOffset += copied;
+            return copyState;
         }
 
-        while (copied < bodyLength)
+        request.Body = request.BodyBuffer!.AsMemory(0, bodyLength);
+        return copyState;
+    }
+
+    /// <summary>
+    /// Copies <paramref name="count"/> body bytes into <see cref="HttpRequest.BodyBuffer"/> starting at
+    /// <paramref name="destOffset"/>: first whatever is already in the receive buffer, then straight
+    /// from the socket.
+    /// </summary>
+    /// <remarks>
+    /// The body buffer grows as bytes actually arrive instead of being sized from the declared
+    /// length up front. Otherwise a client could make the server reserve up to
+    /// <see cref="ServerOptions.MaxRequestBodySize"/> per connection by sending only a header.
+    /// </remarks>
+    private async ValueTask<BodyReadState> CopyBodyBytesAsync(
+        SocketReceiver receiver,
+        byte[] buf,
+        int parseOffset,
+        int end,
+        HttpRequest request,
+        int destOffset,
+        int count,
+        CancellationTokenSource? readTimeoutCts)
+    {
+        var total = destOffset + count;
+        var buffered = Math.Min(count, end - parseOffset);
+
+        EnsureBodyBufferCapacity(request, destOffset + Math.Min(count, Math.Max(buffered, InitialBodyBufferSize)), destOffset);
+
+        if (buffered > 0)
         {
-            var read = await ReceiveAsync(receiver, request.BodyBuffer!.AsMemory(copied, bodyLength - copied), readTimeoutCts);
+            buf.AsSpan(parseOffset, buffered).CopyTo(request.BodyBuffer!.AsSpan(destOffset, buffered));
+            parseOffset += buffered;
+        }
+
+        var copied = destOffset + buffered;
+        while (copied < total)
+        {
+            var capacity = Math.Min(request.BodyBuffer!.Length, total);
+            if (copied == capacity)
+            {
+                EnsureBodyBufferCapacity(request, (int)Math.Min(total, capacity * 2L), copied);
+                capacity = Math.Min(request.BodyBuffer!.Length, total);
+            }
+
+            var read = await ReceiveAsync(receiver, request.BodyBuffer!.AsMemory(copied, capacity - copied), readTimeoutCts);
             if (read == 0)
             {
                 return new BodyReadState(RequestBodyReadResult.ClientClosed, parseOffset, end);
@@ -418,7 +478,6 @@ internal sealed class Connection
             copied += read;
         }
 
-        request.Body = request.BodyBuffer!.AsMemory(0, bodyLength);
         return new BodyReadState(RequestBodyReadResult.Success, parseOffset, end);
     }
 
@@ -504,37 +563,19 @@ internal sealed class Connection
                     }
                 }
 
-                if (_serverOptions.MaxRequestBodySize is { } maxRequestBodySize &&
-                    bodyLength + chunkSize > maxRequestBodySize)
+                var maxBodySize = _serverOptions.MaxRequestBodySize ?? int.MaxValue;
+                if ((long)bodyLength + chunkSize > maxBodySize)
                 {
                     return new BodyReadState(RequestBodyReadResult.TooLarge, parseOffset, end);
                 }
 
-                EnsureBodyBufferCapacity(request, bodyLength + chunkSize, bodyLength);
-
-                var copied = 0;
-                if (parseOffset < end)
+                var copyState = await CopyBodyBytesAsync(receiver, buf, parseOffset, end, request, bodyLength, chunkSize, readTimeoutCts);
+                if (copyState.Result != RequestBodyReadResult.Success)
                 {
-                    copied = Math.Min(chunkSize, end - parseOffset);
-                    buf.AsSpan(parseOffset, copied).CopyTo(request.BodyBuffer!.AsSpan(bodyLength, copied));
-                    parseOffset += copied;
+                    return copyState;
                 }
 
-                while (copied < chunkSize)
-                {
-                    var read = await ReceiveAsync(
-                        receiver,
-                        request.BodyBuffer!.AsMemory(bodyLength + copied, chunkSize - copied),
-                        readTimeoutCts);
-                    
-                    if (read == 0)
-                    {
-                        return new BodyReadState(RequestBodyReadResult.ClientClosed, parseOffset, end);
-                    }
-
-                    copied += read;
-                }
-
+                parseOffset = copyState.ParseOffset;
                 bodyLength += chunkSize;
 
                 while (true)
@@ -581,7 +622,7 @@ internal sealed class Connection
 
         var newSize = request.BodyBuffer is null
             ? requiredLength
-            : Math.Max(requiredLength, request.BodyBuffer.Length * 2);
+            : (int)Math.Max(requiredLength, Math.Min(request.BodyBuffer.Length * 2L, Array.MaxLength));
 
         var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         if (request.BodyBuffer is not null)
@@ -665,15 +706,35 @@ internal sealed class Connection
     }
 
     /// <summary>
-    /// Configures the specified <paramref name="readTimeoutCts"/> to trigger a timeout
-    /// after the duration defined by <see cref="ServerOptions.ReadTimeout"/> if it is not null.
+    /// Configures the specified <paramref name="readTimeoutCts"/> to close the socket after
+    /// <see cref="ServerOptions.ReadTimeout"/>, or earlier when the pending header block would
+    /// otherwise outlive <see cref="ServerOptions.RequestHeadersTimeout"/>.
     /// </summary>
     /// <param name="readTimeoutCts">
     /// The <see cref="CancellationTokenSource"/> to set the timeout for. If null, no action is taken.
     /// </param>
     private void ArmReadTimeout(CancellationTokenSource? readTimeoutCts)
     {
-        readTimeoutCts?.CancelAfter(_serverOptions.ReadTimeout!.Value);
+        if (readTimeoutCts is null)
+        {
+            return;
+        }
+
+        var timeout = _serverOptions.ReadTimeout;
+        if (_headersDeadline != 0)
+        {
+            // A partial header block is buffered: never wait past its absolute deadline.
+            var remaining = TimeSpan.FromMilliseconds(Math.Max(0, _headersDeadline - Environment.TickCount64));
+            if (timeout is null || remaining < timeout)
+            {
+                timeout = remaining;
+            }
+        }
+
+        if (timeout is { } effectiveTimeout)
+        {
+            readTimeoutCts.CancelAfter(effectiveTimeout);
+        }
     }
 
     /// <summary>

@@ -172,8 +172,15 @@ internal static class ChunkedBodyParser
                 return ChunkedBodyParseResult.Invalid;
             }
 
-            var name = line[..colonIdx].Trim((byte)' ');
-            var value = line[(colonIdx + 1)..].Trim((byte)' ');
+            // Trailer fields follow the same syntax rules as header fields: a token name
+            // with no whitespace before the colon, and a value free of control characters.
+            var name = line[..colonIdx];
+            var value = HttpParser.TrimOws(line[(colonIdx + 1)..]);
+
+            if (name.IsEmpty || !HttpParser.IsValidToken(name) || !HttpParser.IsValidFieldValue(value))
+            {
+                return ChunkedBodyParseResult.Invalid;
+            }
 
             if (!trailers.Add(name, value))
             {

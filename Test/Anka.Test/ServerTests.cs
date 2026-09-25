@@ -128,7 +128,7 @@ public class ServerTests
         Assert.Null(options.MinThreadPoolThreads);
         Assert.Null(options.AcceptorCount);
         Assert.Equal(512, options.Backlog);
-        Assert.Null(options.ReadTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.ReadTimeout);
     }
 
     [Fact]

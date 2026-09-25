@@ -33,7 +33,7 @@
 
 **Per-connection allocation (once, reused):**
 - `ArrayPool.Rent(64 KB)` — sliding receive window, compacted only when tail is full
-- `HttpRequestPool.Rent()` — single-slot CAS pool (not `ConcurrentQueue` — avoid ~608 B allocations)
+- `HttpRequestPool.Rent()` — 32-slot CAS pool (not `ConcurrentQueue` — avoid ~608 B allocations)
 - `HttpResponseWriter.buffer` — `ArrayPool` rented, returned on dispose
 
 **Per-request allocation (zero on existing connections):**
@@ -42,7 +42,7 @@
 - Body: read into rented buffer, then `ReadOnlyMemory<byte>` slice
 
 **Connection close:**
-- `HttpRequest.Dispose()` returns buffers to `ArrayPool`
+- `HttpRequestPool.Return()` returns the body buffer to `ArrayPool` (the ≤ 64 KB header buffer stays pooled)
 - `SocketReceiver.Dispose()` releases `SocketAsyncEventArgs`
 
 **Result:** Steady state is **zero allocation**.
@@ -210,7 +210,7 @@ await client.ConnectAsync(IPAddress.Loopback, server.Port);
 1. **String allocation on hot paths** — Use `"..."u8` bytes literals instead
 2. **Storing `ReadOnlySpan<byte>` in fields** — Must be property-backed for AOT
 3. **Calling async from sync context** — Wrap ref struct access in synchronous helper
-4. **Forgetting `req.Return()`** — Exhausts the single-slot pool; leaves garbage for GC
+4. **Forgetting `req.Return()`** — Leaves request state and trailer buffers behind for GC
 5. **`ConcurrentQueue<T>` instead of CAS pool** — Allocates ~608 B per 32 operations
 6. **Trying to optimize streaming response bodies** — Use `response.GetStream()` for chunked transfer encoding (zero-allocation for header construction).
 7. **Assuming chunked response encoding works** — Fully supported via `response.GetStream()`.Terminating chunk and trailers managed automatically.
@@ -262,7 +262,7 @@ await client.ConnectAsync(IPAddress.Loopback, server.Port);
 
 2. **Connection.ProcessAsync()** — Single task per connection
    - Manage cancellation via `_cancellationToken.Register(socket.Close, ...)`
-   - Use read timeout `CancellationTokenSource` for Slowloris protection
+   - One `CancellationTokenSource` enforces both `ReadTimeout` (per read, resets on progress) and `RequestHeadersTimeout` (absolute deadline from a request's first byte to the end of its headers) for Slowloris protection
 
 3. **RequestHandler** — User delegate is awaited
    - Can be `static` (preferred for AOT)

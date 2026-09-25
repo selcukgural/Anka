@@ -378,7 +378,7 @@ Anka returns the following automatic error responses before the user handler run
 | Status | Condition | Behaviour |
 |---|---|---|
 | `100 Continue` | `Expect: 100-continue` header present | Sent before reading the request body |
-| `400 Bad Request` | Malformed request line, unrecognised method, invalid headers (e.g. malformed name, obs-fold), conflicting `Content-Length`, missing/invalid `Host`, malformed HTTP version token | Connection closed |
+| `400 Bad Request` | Malformed request line, unrecognised method, control characters in the request-target, invalid headers (e.g. malformed name, obs-fold, CR/LF/NUL or other control bytes in a value), a `Content-Length` that is not plain digits (`+5`, `5,5`, `0x5`) or conflicts with another, missing/invalid `Host`, malformed HTTP version token | Connection closed |
 | `411 Length Required` | POST, PUT, or PATCH request missing `Content-Length` or `Transfer-Encoding` | Connection closed |
 | `413 Payload Too Large` | Body exceeds `ServerOptions.MaxRequestBodySize` | Connection closed |
 | `414 URI Too Long` | Request-target exceeds `ServerOptions.MaxRequestTargetSize` | Connection closed |
@@ -389,11 +389,13 @@ Anka returns the following automatic error responses before the user handler run
 
 | Limit | Default | ServerOptions Property | Over-limit Response |
 |---|---|---|---|
-| Request body size | Unlimited | `MaxRequestBodySize` | `413` |
+| Request body size | 30,000,000 bytes | `MaxRequestBodySize` (`null` disables) | `413` |
 | Request-target size | Unlimited | `MaxRequestTargetSize` | `414` |
 | Header aggregate size | 8 KB | `MaxRequestHeadersSize` | `431` |
 | Header count | 64 | — (hard limit) | `431` |
-| Idle read timeout | None | `ReadTimeout` | Connection closed silently |
+| Idle read timeout (also keep-alive idle) | 30 s | `ReadTimeout` (`null` disables) | Connection closed silently |
+| Total time to receive the header block | 30 s | `RequestHeadersTimeout` (`null` disables) | Connection closed silently |
+| Concurrent connections | Unlimited | `MaxConcurrentConnections` | New connection closed without a response |
 
 ### Roadmap & Upcoming Features
 
@@ -687,10 +689,12 @@ Optional configuration passed to the `Server` constructor. All properties are op
 | `AcceptorCount`           | `int?`                       | `max(ProcessorCount / 2, 2)`     | Number of parallel accept loops.                                                                                |
 | `Backlog`                 | `int`                        | `512`                            | Backlog passed to `Socket.Listen()`.                                                                            |
 | `DefaultResponseHeaders`  | `IReadOnlyList<HttpHeader>`  | `[]`                             | Headers appended to every response (e.g., security headers). Allocated once at startup — zero per-request cost. |
-| `MaxRequestBodySize`      | `int?`                       | `null` (unlimited)               | Maximum allowed request body in bytes. Requests that exceed this limit automatically receive `413 Payload Too Large`. |
+| `MaxRequestBodySize`      | `int?`                       | `30_000_000`                     | Maximum allowed request body in bytes. Requests that exceed this limit automatically receive `413 Payload Too Large`. `null` removes the limit — the body is buffered in memory, so only do this behind a proxy that enforces its own limit. |
 | `MaxRequestTargetSize`    | `int?`                       | `null` (unlimited)               | Maximum allowed request-target size in bytes. Requests that exceed this limit automatically receive `414 URI Too Long`. |
 | `MaxRequestHeadersSize`   | `int`                        | `8192`                           | Maximum allowed aggregate size of request header names and values. Requests that exceed this limit, or the built-in header-count cap, automatically receive `431 Request Header Fields Too Large`. |
-| `ReadTimeout`             | `TimeSpan?`                  | `null`                           | Optional idle read timeout used to close stalled connections and mitigate Slowloris-style requests. |
+| `ReadTimeout`             | `TimeSpan?`                  | `30 s`                           | Idle read timeout: closes connections that make no progress for this long, including idle keep-alive connections. `null` disables it. |
+| `RequestHeadersTimeout`   | `TimeSpan?`                  | `30 s`                           | Absolute deadline for receiving the request line and headers, counted from the first byte of the request. Stops Slowloris clients that send one byte just inside `ReadTimeout`. `null` disables it. |
+| `MaxConcurrentConnections`| `int?`                       | `null` (unlimited)               | Maximum number of connections served at once; extra connections are closed immediately. |
 
 **Example:**
 
@@ -855,15 +859,15 @@ The parser uses a short length/byte dispatch instead of chaining multiple `Seque
 
 ### `HttpRequestPool` (internal static)
 
-CAS-based single-slot object pool. Lock-free, AOT-safe.
+CAS-based object pool with 32 slots. Lock-free, AOT-safe.
 
 | Member        | Description                                                                                                       |
 |---------------|-------------------------------------------------------------------------------------------------------------------|
-| `Rent()`      | `Interlocked.Exchange(ref _slot, null)` — returns slot if full, otherwise `new HttpRequest()`                     |
-| `Return(req)` | `req.Reset()` then `Interlocked.CompareExchange(ref _slot, req, null)` — if slot is full, instance is left for GC |
+| `Rent()`      | `Interlocked.Exchange` over the slots — returns the first cached instance, otherwise `new HttpRequest()`           |
+| `Return(req)` | Returns `req.BodyBuffer` to `ArrayPool`, resets the request, then `Interlocked.CompareExchange` into the first empty slot — if all slots are full, the instance is left for GC. The header buffer (≤ 64 KB) is kept; the body buffer is not, so one large upload cannot pin memory for the life of the process. |
 
 **Why not ConcurrentQueue?**  
-`ConcurrentQueue<T>` allocates a new internal segment (~608 bytes) every 32 enqueue/dequeue operations. This caused 608 B to appear in microbenchmarks. A CAS single-slot achieves **0 B**.
+`ConcurrentQueue<T>` allocates a new internal segment (~608 bytes) every 32 enqueue/dequeue operations. This caused 608 B to appear in microbenchmarks. CAS slots achieve **0 B**.
 
 ---
 
@@ -886,7 +890,7 @@ Memory movement per request:
   └── Copies only path/query/header slices and any Content-Length body
 
 Connection closes:
-  ├── HttpRequestPool.Return(request)
+  ├── HttpRequestPool.Return(request)   ← releases BodyBuffer, keeps the header buffer
   ├── ArrayPool.Return(receive buffer)
   ├── SocketReceiver.Dispose()            ← disposes SocketAsyncEventArgs
   └── HttpResponseWriter.Dispose()        ← returns response buffer
@@ -1047,7 +1051,7 @@ Anka/
 │       │   ├── HttpMethodParser.cs  (byte span → HttpMethod enum)
 │       │   ├── HttpParseResult.cs   (parse result enum)
 │       │   ├── HttpParser.cs        (two-phase HTTP/1.x parser)
-│       │   ├── HttpRequestPool.cs   (CAS single-slot object pool)
+│       │   ├── HttpRequestPool.cs   (CAS object pool, 32 slots)
 │       │   ├── HttpVersionParser.cs (byte span → HttpVersion enum + malformed check)
 │       │   ├── RequestTargetForm.cs (origin / absolute / authority / asterisk enum)
 │       │   └── SocketReceiver.cs    (zero-alloc SocketAsyncEventArgs + IValueTaskSource)

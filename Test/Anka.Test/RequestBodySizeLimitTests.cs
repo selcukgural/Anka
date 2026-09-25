@@ -7,7 +7,7 @@ namespace Anka.Test;
 
 /// <summary>
 /// Integration tests for 413 Payload Too Large validation.
-/// Verifies that MaxRequestBodySize is enforced when set, and bypassed when null.
+/// Verifies that MaxRequestBodySize is enforced when set (30 MB by default), and bypassed when null.
 /// </summary>
 public class RequestBodySizeLimitTests
 {
@@ -34,10 +34,10 @@ public class RequestBodySizeLimitTests
     }
 
     [Fact]
-    public void MaxRequestBodySize_DefaultIsNull()
+    public void MaxRequestBodySize_DefaultIs30MB()
     {
         var options = new ServerOptions();
-        Assert.Null(options.MaxRequestBodySize);
+        Assert.Equal(ServerOptions.DefaultMaxRequestBodySize, options.MaxRequestBodySize);
     }
 
     // ── No limit (null) ───────────────────────────────────────────────────

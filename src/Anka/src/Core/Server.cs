@@ -43,6 +43,11 @@ public sealed class Server
     private readonly ServerOptions _options;
 
     /// <summary>
+    /// Number of open connections, tracked only when <see cref="ServerOptions.MaxConcurrentConnections"/> is set.
+    /// </summary>
+    private int _activeConnections;
+
+    /// <summary>
     /// Raised once the listening socket has been bound and started accepting connections.
     /// Useful for startup instrumentation and readiness reporting.
     /// </summary>
@@ -128,13 +133,42 @@ public sealed class Server
             {
                 var client = await listener.AcceptAsync(cancellationToken);
 
-                // Fire & forget — accept loop never blocks on a connection
-                _ = Connection.RunAsync(client, _handler, _options, cancellationToken);
+                if (_options.MaxConcurrentConnections is not { } maxConnections)
+                {
+                    // Fire & forget — accept loop never blocks on a connection
+                    _ = Connection.RunAsync(client, _handler, _options, cancellationToken);
+                    continue;
+                }
+
+                if (Interlocked.Increment(ref _activeConnections) > maxConnections)
+                {
+                    Interlocked.Decrement(ref _activeConnections);
+                    client.Dispose();
+                    continue;
+                }
+
+                _ = RunCountedConnectionAsync(client, cancellationToken);
             }
         }
         catch (OperationCanceledException)
         {
             // Expected on shutdown
+        }
+    }
+
+    /// <summary>
+    /// Runs a connection that counts toward <see cref="ServerOptions.MaxConcurrentConnections"/>
+    /// and releases its slot when the connection ends.
+    /// </summary>
+    private async Task RunCountedConnectionAsync(Socket client, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Connection.RunAsync(client, _handler, _options, cancellationToken);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeConnections);
         }
     }
 }

@@ -30,11 +30,17 @@ internal static class HttpRequestPool
     }
 
     /// <summary>
-    /// Resets <paramref name="req"/> and returns it to the first available pool slot.
-    /// If all slots are occupied, the instance is discarded.
+    /// Resets <paramref name="req"/>, releases its body buffer and returns it to the first
+    /// available pool slot. If all slots are occupied, the instance is discarded.
     /// </summary>
+    /// <remarks>
+    /// The body buffer is sized by the largest body the connection received, so keeping it on a
+    /// pooled instance would pin that memory for the life of the process. The header buffer is
+    /// bounded (≤ 64 KB) and is kept for reuse.
+    /// </remarks>
     public static void Return(HttpRequest req)
     {
+        req.ReleaseBodyBuffer();
         req.ResetForReuse();
 
         for (var i = 0; i < PoolSize; i++)

@@ -237,13 +237,24 @@ public sealed class HttpRequest
             Buffer = null;
         }
 
-        if (BodyBuffer is not null)
+        ReleaseBodyBuffer();
+        ResetForReuse();
+    }
+
+    /// <summary>
+    /// Returns <see cref="BodyBuffer"/> to the shared pool. Called when the owning connection
+    /// closes, before the instance goes back to <see cref="HttpRequestPool"/>.
+    /// </summary>
+    internal void ReleaseBodyBuffer()
+    {
+        if (BodyBuffer is null)
         {
-            ArrayPool<byte>.Shared.Return(BodyBuffer);
-            BodyBuffer = null;
+            return;
         }
 
-        ResetForReuse();
+        ArrayPool<byte>.Shared.Return(BodyBuffer);
+        BodyBuffer = null;
+        Body = default;
     }
 
     /// <summary>

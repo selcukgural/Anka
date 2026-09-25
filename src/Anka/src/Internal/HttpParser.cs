@@ -200,7 +200,7 @@ internal static class HttpParser
                 }
             }
 
-            if (headerLine.Length > 15 && (headerLine.FirstSpan[0] | 0x20) == (byte)'c')
+            if (headerLine.Length >= 15 && (headerLine.FirstSpan[0] | 0x20) == (byte)'c')
             {
                 var contentLengthResult = TrackContentLength(headerLine, req);
                 if (contentLengthResult != HttpParseResult.Success)
@@ -267,26 +267,24 @@ internal static class HttpParser
     {
         const int nameLen = 14; // "content-length"
 
-        // Grab the name portion into a stack buffer for comparison
-        Span<byte> nameBuf = stackalloc byte[nameLen];
-        line.Slice(0, nameLen).CopyTo(nameBuf);
+        // Grab the name and the byte after it into a stack buffer. The colon must follow the
+        // name directly, so "content-length-foo: x" and "content-length : x" are not treated
+        // as Content-Length here (the latter is rejected later by header-name validation).
+        Span<byte> nameBuf = stackalloc byte[nameLen + 1];
+        line.Slice(0, nameLen + 1).CopyTo(nameBuf);
 
-        if (!AsciiEqualsIgnoreCase(nameBuf, "content-length"u8))
+        if (nameBuf[nameLen] != (byte)':' || !AsciiEqualsIgnoreCase(nameBuf[..nameLen], "content-length"u8))
         {
             return HttpParseResult.Success;
         }
 
         request.HasContentLength = true;
-        var valueStart = nameLen;
-        while (valueStart < line.Length && GetByte(line, valueStart) is (byte)':' or (byte)' ')
-        {
-            valueStart++;
-        }
+        const int valueStart = nameLen + 1;
 
         long parsed;
         if (line.IsSingleSegment)
         {
-            if (!TryParseContentLengthValue(line.FirstSpan[valueStart..].Trim((byte)' '), out parsed))
+            if (!TryParseContentLengthValue(TrimOws(line.FirstSpan[valueStart..]), out parsed))
             {
                 request.HasInvalidContentLength = true;
                 return HttpParseResult.Success;
@@ -299,7 +297,7 @@ internal static class HttpParser
             {
                 line.Slice(valueStart).CopyTo(scratch);
                 if (!TryParseContentLengthValue(
-                        scratch.AsSpan(0, (int)(line.Length - valueStart)).Trim((byte)' '),
+                        TrimOws(scratch.AsSpan(0, (int)(line.Length - valueStart))),
                         out parsed))
                 {
                     request.HasInvalidContentLength = true;
@@ -324,29 +322,42 @@ internal static class HttpParser
     }
 
     /// <summary>
-    /// Attempts to parse the provided <paramref name="value"/> as a Content-Length header value,
-    /// validating that it represents a valid, non-negative long integer encoded in UTF-8.
+    /// Attempts to parse the provided <paramref name="value"/> as a Content-Length header value.
+    /// RFC 9110 §8.6 allows only <c>1*DIGIT</c>: signs, whitespace, commas and any other byte are
+    /// rejected so that Anka never disagrees with an upstream proxy about message framing.
     /// </summary>
-    /// <param name="value">The span of bytes representing the Content-Length value in UTF-8 encoding.</param>
+    /// <param name="value">The span of bytes representing the Content-Length value.</param>
     /// <param name="parsed">When this method returns, contains the parsed Content-Length value if the parse was successful. Otherwise, it contains 0.</param>
     /// <returns>
-    /// <c>true</c> if the parse operation was successful, the entire span was consumed, and the value represents a valid non-negative number; otherwise, <c>false</c>.
+    /// <c>true</c> if the value is a non-empty run of ASCII digits that fits in a <see cref="long"/>; otherwise, <c>false</c>.
     /// </returns>
     private static bool TryParseContentLengthValue(ReadOnlySpan<byte> value, out long parsed)
     {
-        var ok = Utf8Parser.TryParse(value, out parsed, out var consumed) &&
-                 consumed == value.Length &&
-                 parsed >= 0;
-
-        if (ok)
+        parsed = 0;
+        if (value.IsEmpty)
         {
-            return true;
+            return false;
         }
 
-        parsed = 0;
-        return false;
+        foreach (var b in value)
+        {
+            var digit = (uint)(b - '0');
+            if (digit > 9 || parsed > (long.MaxValue - digit) / 10)
+            {
+                parsed = 0;
+                return false;
+            }
 
+            parsed = parsed * 10 + digit;
+        }
+
+        return true;
     }
+
+    /// <summary>
+    /// Trims optional whitespace (SP / HTAB, RFC 9110 §5.6.3) from both ends of a field value.
+    /// </summary>
+    internal static ReadOnlySpan<byte> TrimOws(ReadOnlySpan<byte> value) => value.Trim(" \t"u8);
 
     /// <summary>
     /// Parses the HTTP request line from the provided byte sequence and extracts method, path, query, and HTTP version information.
@@ -407,7 +418,7 @@ internal static class HttpParser
                 return HttpParseResult.RequestTargetTooLong;
             }
 
-            if (req.Method == HttpMethod.Unknown)
+            if (req.Method == HttpMethod.Unknown || !IsValidRequestTarget(rawPath))
             {
                 return HttpParseResult.Invalid;
             }
@@ -525,9 +536,55 @@ internal static class HttpParser
             return HttpParseResult.Invalid;
         }
 
-        var value = line[(colon + 1)..].Trim((byte)' ');
+        var value = TrimOws(line[(colon + 1)..]);
+
+        // RFC 9110 §5.5 / RFC 9112 §2.2: a field value must not contain CR, LF, NUL or other
+        // control characters. A bare LF in particular would be read as a line break by a
+        // lenient upstream proxy, letting a client hide a header (e.g. Transfer-Encoding)
+        // from one side of the connection.
+        if (!IsValidFieldValue(value))
+        {
+            return HttpParseResult.Invalid;
+        }
 
         return headers.Add(name, value) ? HttpParseResult.Success : HttpParseResult.HeaderFieldsTooLarge;
+    }
+
+    /// <summary>
+    /// Determines whether <paramref name="value"/> contains only bytes allowed in a field value:
+    /// visible ASCII, SP, HTAB and obs-text (0x80–0xFF). Any other control byte, including a
+    /// bare CR or LF, makes the value invalid.
+    /// </summary>
+    internal static bool IsValidFieldValue(ReadOnlySpan<byte> value)
+    {
+        foreach (var b in value)
+        {
+            if ((b < 0x20 && b != (byte)'\t') || b == 0x7F)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Rejects request-targets that contain control characters or DEL. A bare CR/LF, NUL or
+    /// similar byte in the target is either an attack or a broken client and must not reach
+    /// the handler's path. Non-ASCII bytes are left alone for compatibility with clients that
+    /// send raw UTF-8.
+    /// </summary>
+    private static bool IsValidRequestTarget(ReadOnlySpan<byte> target)
+    {
+        foreach (var b in target)
+        {
+            if (b <= 0x20 || b == 0x7F)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -541,7 +598,7 @@ internal static class HttpParser
     /// <returns>
     /// <c>true</c> if the span contains only valid tchar characters; otherwise, <c>false</c>.
     /// </returns>
-    private static bool IsValidToken(ReadOnlySpan<byte> span)
+    internal static bool IsValidToken(ReadOnlySpan<byte> span)
     {
         foreach (var b in span)
         {
@@ -1110,35 +1167,6 @@ internal static class HttpParser
 
         hasChunkedTransferEncoding = sawChunked;
         return true;
-    }
-
-
-    /// <summary>
-    /// Retrieves the byte at the specified <paramref name="position"/> within a <see cref="ReadOnlySequence{T}"/>.
-    /// The sequence can be composed of multiple segments.
-    /// </summary>
-    /// <param name="seq">The <see cref="ReadOnlySequence{T}"/> from which to retrieve the byte.</param>
-    /// <param name="position">The zero-based position of the byte to retrieve within the sequence.</param>
-    /// <returns>The byte value at the specified position if found; otherwise, returns 0.</returns>
-    private static byte GetByte(ReadOnlySequence<byte> seq, long position)
-    {
-        // Fast path: position is in the first segment
-        if (position < seq.FirstSpan.Length)
-        {
-            return seq.FirstSpan[(int)position];
-        }
-
-        foreach (var segment in seq)
-        {
-            if (position < segment.Length)
-            {
-                return segment.Span[(int)position];
-            }
-
-            position -= segment.Length;
-        }
-
-        return 0;
     }
 
     /// <summary>
