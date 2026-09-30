@@ -53,6 +53,14 @@ internal static class ChunkedBodyParser
         var extensionStart = sizeToken.IndexOf((byte)';');
         if (extensionStart >= 0)
         {
+            // Chunk extensions are ignored, but they must not contain control bytes. A bare LF in
+            // particular would end the chunk-size line early for a lenient proxy while Anka reads on
+            // to the CRLF, so the two sides would disagree about where the chunk data starts.
+            if (!HttpParser.IsValidFieldValue(sizeToken[extensionStart..]))
+            {
+                return ChunkedBodyParseResult.Invalid;
+            }
+
             sizeToken = sizeToken[..extensionStart];
         }
 

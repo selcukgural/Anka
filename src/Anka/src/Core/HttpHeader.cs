@@ -39,8 +39,23 @@ public readonly struct HttpHeader
     /// </summary>
     /// <param name="name">Header name as lowercase ASCII bytes.</param>
     /// <param name="value">Header value as ASCII/UTF-8 bytes.</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="name"/> is empty or not a valid token, or <paramref name="value"/> contains CR, LF
+    /// or another control character. Such bytes would let a caller inject extra header lines or a
+    /// second response (response splitting).
+    /// </exception>
     public HttpHeader(ReadOnlyMemory<byte> name, ReadOnlyMemory<byte> value)
     {
+        if (name.IsEmpty || !HttpParser.IsValidToken(name.Span))
+        {
+            throw new ArgumentException("Header name must be a non-empty HTTP token (RFC 9110 §5.1).", nameof(name));
+        }
+
+        if (!HttpParser.IsValidFieldValue(value.Span))
+        {
+            throw new ArgumentException("Header value must not contain control characters such as CR or LF.", nameof(value));
+        }
+
         Name  = name;
         Value = value;
     }

@@ -28,6 +28,14 @@ public sealed class HttpResponseWriter : IDisposable
     private readonly Socket _socket;
     private bool _suppressResponseBody;
     private HttpVersion _version = HttpVersion.Http11;
+
+    // Per-request response state, reset by ResetForRequest().
+    private bool _requestKeepAlive = true;
+    private bool _hasStarted;
+    private bool _isChunked;
+    private bool _chunkedFinished;
+    private bool _closeDelimitedBody;
+    private bool _closeAfterResponse;
     private HttpHeaders _requestHeaders;
     private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
     private static readonly byte[] Continue100Response = "HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray();
@@ -76,6 +84,63 @@ public sealed class HttpResponseWriter : IDisposable
     internal void SetRequestHeaders(HttpHeaders headers) => _requestHeaders = headers;
 
     /// <summary>
+    /// Records whether the client asked to keep the connection open. A response can only narrow this:
+    /// passing <c>keepAlive: true</c> for a request that asked for <c>Connection: close</c> still closes.
+    /// </summary>
+    internal void SetRequestKeepAlive(bool keepAlive) => _requestKeepAlive = keepAlive;
+
+    /// <summary>
+    /// Clears the per-request response state before the next request on the same connection.
+    /// </summary>
+    internal void ResetForRequest()
+    {
+        _suppressResponseBody = false;
+        _requestKeepAlive = true;
+        _hasStarted = false;
+        _isChunked = false;
+        _chunkedFinished = false;
+        _closeDelimitedBody = false;
+        _closeAfterResponse = false;
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether the status line and headers of the current response have been written.
+    /// Once <see langword="true"/>, starting another response for the same request throws.
+    /// </summary>
+    public bool HasStarted => _hasStarted;
+
+    /// <summary>A chunked response was started but its terminating chunk has not been sent yet.</summary>
+    internal bool IsChunkedResponseOpen => _isChunked && !_chunkedFinished;
+
+    /// <summary>
+    /// The response told the client the connection will close (<c>Connection: close</c>) or uses a
+    /// close-delimited body, so the server must close the connection after it.
+    /// </summary>
+    internal bool ShouldCloseConnection => _closeAfterResponse;
+
+    /// <summary>
+    /// Marks the response as started and returns the keep-alive value to advertise, which is the
+    /// handler's choice narrowed by the request's.
+    /// </summary>
+    private bool BeginResponse(bool keepAlive)
+    {
+        if (_hasStarted)
+        {
+            throw new InvalidOperationException(
+                "The response has already started. Only one response can be written per request.");
+        }
+
+        _hasStarted = true;
+        keepAlive &= _requestKeepAlive;
+        if (!keepAlive)
+        {
+            _closeAfterResponse = true;
+        }
+
+        return keepAlive;
+    }
+
+    /// <summary>
     /// Sends an HTTP/1.1 "100 Continue" response to indicate that the client should proceed with the request.
     /// </summary>
     /// <param name="cancellationToken">A token that can be used to cancel the operation.</param>
@@ -100,7 +165,10 @@ public sealed class HttpResponseWriter : IDisposable
         _stream.Reset();
         var buf = Interlocked.Exchange(ref _buf, null!);
 
-        ArrayPool<byte>.Shared.Return(buf);
+        if (buf is not null)
+        {
+            ArrayPool<byte>.Shared.Return(buf);
+        }
     }
 
     /// <summary>
@@ -199,6 +267,9 @@ public sealed class HttpResponseWriter : IDisposable
     private ValueTask WriteInternalAsync(int statusCode, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte> contentType, bool keepAlive,
                                          ReadOnlySpan<HttpHeader> extraHeaders, long rangeStart, long rangeEnd, long totalLength, CancellationToken cancellationToken)
     {
+        ValidateContentType(contentType.Span);
+        keepAlive = BeginResponse(keepAlive);
+
         // Cache validation (RFC 9111)
         if (statusCode == 200)
         {
@@ -221,20 +292,8 @@ public sealed class HttpResponseWriter : IDisposable
         var suppressBody = _suppressResponseBody || IsBodyForbiddenStatus(statusCode);
         var smallBodyThreshold = !suppressBody && body.Length <= 4096 ? body.Length : 0;
 
-        // Account for default + extra headers: "name: value\r\n" per entry
-        var extraSize = 0;
-
-        foreach (var h in _defaultHeaders)
-        {
-            extraSize += h.Name.Length + 2 + h.Value.Length + 2;
-        }
-
-        foreach (var h in extraHeaders)
-        {
-            extraSize += h.Name.Length + 2 + h.Value.Length + 2;
-        }
-
-        var needed = headerEstimate + extraSize + smallBodyThreshold;
+        // Account for Content-Type + default + extra headers: "name: value\r\n" per entry
+        var needed = headerEstimate + VariableHeaderSize(contentType, extraHeaders) + smallBodyThreshold;
 
         byte[]? tempBuf = null;
         var buf = _buf;
@@ -245,7 +304,7 @@ public sealed class HttpResponseWriter : IDisposable
             buf = tempBuf;
         }
 
-        var pos = BuildHeaderBlock(buf, _version, statusCode, body.Length, false, keepAlive, contentType, _defaultHeaders, extraHeaders, smallBodyThreshold, body.Span, rangeStart, rangeEnd, totalLength);
+        var pos = BuildHeaderBlock(buf, _version, statusCode, body.Length, false, false, keepAlive, contentType, _defaultHeaders, extraHeaders, smallBodyThreshold, body.Span, rangeStart, rangeEnd, totalLength);
 
         // Fast synchronous path: try sending without async state machine.
         if (smallBodyThreshold > 0 || body.IsEmpty || suppressBody)
@@ -274,20 +333,21 @@ public sealed class HttpResponseWriter : IDisposable
         ReadOnlySpan<HttpHeader> extraHeaders = default,
         CancellationToken cancellationToken = default)
     {
+        ValidateContentType(contentType.Span);
+        keepAlive = BeginResponse(keepAlive);
+        _isChunked = true;
+
+        // Chunked transfer coding does not exist in HTTP/1.0 (RFC 9112 §7). Such clients get a body
+        // delimited by closing the connection instead; trailers cannot be sent that way.
+        if (_version == HttpVersion.Http10)
+        {
+            _closeDelimitedBody = true;
+            _closeAfterResponse = true;
+            keepAlive = false;
+        }
+
         const int headerEstimate = 512;
-        var extraSize = 0;
-
-        foreach (var h in _defaultHeaders)
-        {
-            extraSize += h.Name.Length + 2 + h.Value.Length + 2;
-        }
-
-        foreach (var h in extraHeaders)
-        {
-            extraSize += h.Name.Length + 2 + h.Value.Length + 2;
-        }
-
-        var needed = headerEstimate + extraSize;
+        var needed = headerEstimate + VariableHeaderSize(contentType, extraHeaders);
 
         byte[]? tempBuf = null;
         var buf = _buf;
@@ -298,7 +358,7 @@ public sealed class HttpResponseWriter : IDisposable
             buf = tempBuf;
         }
 
-        var pos = BuildHeaderBlock(buf, _version, statusCode, 0, true, keepAlive, contentType, _defaultHeaders, extraHeaders, 0);
+        var pos = BuildHeaderBlock(buf, _version, statusCode, 0, !_closeDelimitedBody, _closeDelimitedBody, keepAlive, contentType, _defaultHeaders, extraHeaders, 0);
 
         return SendSingleBuffer(buf, pos, tempBuf, cancellationToken);
     }
@@ -312,9 +372,16 @@ public sealed class HttpResponseWriter : IDisposable
     /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
     public ValueTask WriteChunkAsync(ReadOnlyMemory<byte> chunk, CancellationToken cancellationToken = default)
     {
-        if (chunk.IsEmpty)
+        EnsureChunkedResponseOpen();
+
+        if (chunk.IsEmpty || _suppressResponseBody)
         {
             return default;
+        }
+
+        if (_closeDelimitedBody)
+        {
+            return SendBody(chunk, cancellationToken);
         }
 
         // Format: [HexSize]\r\n[Data]\r\n
@@ -353,6 +420,51 @@ public sealed class HttpResponseWriter : IDisposable
 
     private static readonly byte[] FinalChunkNoTrailers = "0\r\n\r\n"u8.ToArray();
 
+    private void EnsureChunkedResponseOpen()
+    {
+        if (!_isChunked)
+        {
+            throw new InvalidOperationException("StartChunkedResponseAsync must be called before writing chunks.");
+        }
+
+        if (_chunkedFinished)
+        {
+            throw new InvalidOperationException("The chunked response has already been finished.");
+        }
+    }
+
+    /// <summary>
+    /// Bytes needed for the Content-Type line plus every default and per-request header line.
+    /// </summary>
+    private int VariableHeaderSize(ReadOnlyMemory<byte> contentType, ReadOnlySpan<HttpHeader> extraHeaders)
+    {
+        var size = contentType.IsEmpty ? 0 : ContentTypeName.Length + contentType.Length + 2;
+
+        foreach (var h in _defaultHeaders)
+        {
+            size += h.Name.Length + 2 + h.Value.Length + 2;
+        }
+
+        foreach (var h in extraHeaders)
+        {
+            size += h.Name.Length + 2 + h.Value.Length + 2;
+        }
+
+        return size;
+    }
+
+    /// <summary>
+    /// Rejects a Content-Type value containing CR, LF or other control bytes, which would otherwise
+    /// let a caller inject extra header lines into the response.
+    /// </summary>
+    private static void ValidateContentType(ReadOnlySpan<byte> contentType)
+    {
+        if (!HttpParser.IsValidFieldValue(contentType))
+        {
+            throw new ArgumentException("Content-Type must not contain control characters such as CR or LF.", nameof(contentType));
+        }
+    }
+
     /// <summary>
     /// Finalizes a chunked HTTP response by sending the terminating zero-length chunk
     /// and any optional trailer headers.
@@ -362,6 +474,15 @@ public sealed class HttpResponseWriter : IDisposable
     /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
     public ValueTask FinishChunkedResponseAsync(ReadOnlySpan<HttpHeader> trailers = default, CancellationToken cancellationToken = default)
     {
+        EnsureChunkedResponseOpen();
+        _chunkedFinished = true;
+
+        // HEAD responses carry no body at all, and a close-delimited body ends when the socket closes.
+        if (_suppressResponseBody || _closeDelimitedBody)
+        {
+            return default;
+        }
+
         if (trailers.IsEmpty)
         {
             return SendBody(FinalChunkNoTrailers, cancellationToken);
@@ -667,7 +788,7 @@ public sealed class HttpResponseWriter : IDisposable
     /// Writes the header block (and optionally an inline small body) into <paramref name="buf"/>
     /// and returns the number of bytes written.
     /// </summary>
-    private static int BuildHeaderBlock(byte[] buf, HttpVersion version, int statusCode, int bodyLength, bool isChunked, bool keepAlive, ReadOnlyMemory<byte> contentType,
+    private static int BuildHeaderBlock(byte[] buf, HttpVersion version, int statusCode, int bodyLength, bool isChunked, bool isCloseDelimited, bool keepAlive, ReadOnlyMemory<byte> contentType,
                                         IReadOnlyList<HttpHeader> defaultHeaders, ReadOnlySpan<HttpHeader> extraHeaders, int smallBodyThreshold, ReadOnlySpan<byte> body = default,
                                         long rangeStart = -1, long rangeEnd = -1, long totalLength = -1)
     {
@@ -697,7 +818,8 @@ public sealed class HttpResponseWriter : IDisposable
             WriteContentRange(rangeStart, rangeEnd, totalLength, span, ref pos);
         }
 
-        if (!forbidBodyHeaders)
+        // A close-delimited body has neither Transfer-Encoding nor Content-Length.
+        if (!forbidBodyHeaders && !isCloseDelimited)
         {
             if (isChunked)
             {

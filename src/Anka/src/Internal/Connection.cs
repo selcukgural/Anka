@@ -109,7 +109,7 @@ internal sealed class Connection
                 {
                     // Reset for reuse — keeps buffers, clears fields.
                     request.ResetForReuse();
-                    writer.SetSuppressResponseBody(false);
+                    writer.ResetForRequest();
 
                     var parseResult = TryParseHeadersNext(
                         buf,
@@ -159,6 +159,7 @@ internal sealed class Connection
                     parseOffset += bytesConsumed;
 
                     var keepAlive = request.IsKeepAlive;
+                    writer.SetRequestKeepAlive(keepAlive);
                     writer.SetSuppressResponseBody(request.Method == HttpMethod.Head);
                     
                     if (!request.IsRequestBodySizeWithinLimit(_serverOptions.MaxRequestBodySize))
@@ -203,19 +204,36 @@ internal sealed class Connection
                     {
                         await Console.Error.WriteLineAsync($"[Anka] Unhandled handler exception: {ex.GetType().Name}: {ex.Message}");
 
-                        try
+                        // Once the status line is on the wire a 500 would be written into the middle of
+                        // the response; the only honest signal left is closing the connection.
+                        if (!writer.HasStarted)
                         {
-                            await writer.WriteAsync(500, cancellationToken: _cancellationToken);
-                        }
-                        catch
-                        {
-                            /* best-effort */
+                            try
+                            {
+                                await writer.WriteAsync(500, keepAlive: false, cancellationToken: _cancellationToken);
+                            }
+                            catch
+                            {
+                                /* best-effort */
+                            }
                         }
 
                         return;
                     }
 
-                    if (!keepAlive)
+                    if (!writer.HasStarted)
+                    {
+                        // The handler returned without writing anything: answer with an empty 200, as
+                        // Kestrel does, instead of leaving the client waiting for a response.
+                        await writer.WriteAsync(200, keepAlive: keepAlive, cancellationToken: _cancellationToken);
+                    }
+                    else if (writer.IsChunkedResponseOpen)
+                    {
+                        // A chunked response the handler never finished (e.g. the stream was not disposed).
+                        await writer.FinishChunkedResponseAsync(cancellationToken: _cancellationToken);
+                    }
+
+                    if (!keepAlive || writer.ShouldCloseConnection)
                     {
                         return;
                     }

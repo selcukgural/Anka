@@ -516,10 +516,13 @@ internal static class HttpParser
     /// <param name="headers">The reference to the header collection where the parsed name-value pair should be added.</param>
     private static HttpParseResult AddHeaderFromSpan(ReadOnlySpan<byte> line, ref HttpHeaders headers)
     {
+        // RFC 9112 §5: every field line is "field-name ':' field-value". A line without a colon, or
+        // with an empty name, is malformed. Silently skipping it would let a proxy that repairs such
+        // lines see a header that Anka ignored.
         var colon = line.IndexOf((byte)':');
         if (colon <= 0)
         {
-            return HttpParseResult.Success;
+            return HttpParseResult.Invalid;
         }
 
         var name = line[..colon];
@@ -619,7 +622,7 @@ internal static class HttpParser
     /// <param name="chr">The character to be evaluated.</param>
     /// <returns>
     /// <c>true</c> if the character is a valid "tchar"; otherwise, <c>false</c>.
-    /// </returns
+    /// </returns>
     private static bool IsTChar(byte chr)
     {
         // tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
@@ -1102,22 +1105,43 @@ internal static class HttpParser
     /// </returns>
     private static bool ComputeKeepAlive(HttpVersion version, ref HttpHeaders headers)
     {
-        if (!headers.TryGetValue(HttpHeaderNames.Connection, out var v))
+        var defaultKeepAlive = version == HttpVersion.Http11;
+        if (!headers.TryGetAllValues(HttpHeaderNames.Connection, out var values))
         {
-            return version == HttpVersion.Http11;
+            return defaultKeepAlive;
         }
 
-        if (v.SequenceEqual("close"u8))
+        // RFC 9110 §7.6.1: Connection is a comma-separated list of case-insensitive tokens and may
+        // be repeated. "close" anywhere wins; "keep-alive" only matters for HTTP/1.0.
+        var sawKeepAlive = false;
+        foreach (var value in values)
         {
-            return false;
-        }
-        
-        if (v.SequenceEqual("keep-alive"u8))
-        {
-            return true;
+            var remaining = value;
+            while (!remaining.IsEmpty)
+            {
+                var comma = remaining.IndexOf((byte)',');
+                var token = TrimOws(comma >= 0 ? remaining[..comma] : remaining);
+
+                if (AsciiEqualsIgnoreCase(token, "close"u8))
+                {
+                    return false;
+                }
+
+                if (AsciiEqualsIgnoreCase(token, "keep-alive"u8))
+                {
+                    sawKeepAlive = true;
+                }
+
+                if (comma < 0)
+                {
+                    break;
+                }
+
+                remaining = remaining[(comma + 1)..];
+            }
         }
 
-        return version == HttpVersion.Http11;
+        return defaultKeepAlive || sawKeepAlive;
     }
 
     /// <summary>
@@ -1149,7 +1173,7 @@ internal static class HttpParser
             while (!remaining.IsEmpty)
             {
                 var comma = remaining.IndexOf((byte)',');
-                var token = (comma >= 0 ? remaining[..comma] : remaining).Trim((byte)' ');
+                var token = TrimOws(comma >= 0 ? remaining[..comma] : remaining);
                 if (token.IsEmpty || sawChunked || !AsciiEqualsIgnoreCase(token, "chunked"u8))
                 {
                     return false;
@@ -1194,23 +1218,23 @@ internal static class HttpParser
             return false;
         }
 
-        var startPart = rangePart[..dashIndex].Trim((byte)' ');
-        var endPart = rangePart[(dashIndex + 1)..].Trim((byte)' ');
+        var startPart = TrimOws(rangePart[..dashIndex]);
+        var endPart = TrimOws(rangePart[(dashIndex + 1)..]);
 
-        if (!startPart.IsEmpty)
+        // Only a single range of plain digits is supported. Anything else ("bytes=0-5abc",
+        // "bytes=--5", multi-range "bytes=0-1,5-6") is reported as unparseable so the caller can
+        // ignore the Range header and serve the full representation (RFC 9110 §14.2).
+        if (!startPart.IsEmpty && !TryParseContentLengthValue(startPart, out start))
         {
-            if (!Utf8Parser.TryParse(startPart, out start, out _))
-            {
-                return false;
-            }
+            start = -1;
+            return false;
         }
 
-        if (!endPart.IsEmpty)
+        if (!endPart.IsEmpty && !TryParseContentLengthValue(endPart, out end))
         {
-            if (!Utf8Parser.TryParse(endPart, out end, out _))
-            {
-                return false;
-            }
+            start = -1;
+            end = -1;
+            return false;
         }
 
         // Validity check: if both specified, start must be <= end.

@@ -131,7 +131,7 @@ public class RequestHeaderAndVersionValidationTests
 
         var response = await SendRawAsync(server.Port, request);
 
-        Assert.Contains("HTTP/1.1 200 OK", response);
+        Assert.Contains("HTTP/1.0 200 OK", response);
     }
 
     [Fact]
