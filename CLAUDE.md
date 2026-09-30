@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Anka is a zero-allocation HTTP/1.x server library for .NET 8+, built for Native AOT with sub-25ms cold starts and zero heap allocation in steady state (keep-alive request loop). It targets serverless/edge use cases: raw sockets, no middleware pipeline, no routing, no HTTP/2, no TLS — the caller's `RequestHandler` delegate does all dispatch. Status is beta (v0.0.1-beta.5) — research/experimentation, not production-hardened.
+Anka is a zero-allocation HTTP/1.x server library for .NET 8+, built for Native AOT with sub-25ms cold starts and zero heap allocation in steady state (keep-alive request loop). It targets serverless/edge use cases: raw sockets, no middleware pipeline, no routing, no HTTP/2, no TLS — the caller's `RequestHandler` delegate does all dispatch. Status is beta (v0.0.1-beta.6) — research/experimentation, not production-hardened.
 
 `AGENTS.md` in the repo root contains a longer-form architecture writeup (memory model, async safety rules, extension-point walkthroughs) — read it for depth beyond this file. Its "Strategic Roadmap" section and the README's RFC-compliance roadmap were updated on 2026-08-14 to mark Range Requests, `ETag`/`If-None-Match` cache validation, and multipart parsing as done (they previously lagged the code). No roadmap items are currently open in either doc — if you add a new one there, keep the "Supported" RFC tables in README in sync rather than letting the checklist drift again.
 

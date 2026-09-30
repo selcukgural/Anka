@@ -10,24 +10,22 @@
 
         <!-- NuGet package metadata -->
         <PackageId>Anka</PackageId>
-        <Version>0.0.1-beta.5</Version>
+        <Version>0.0.1-beta.6</Version>
         <Authors>Selçuk Güral</Authors>
         <Description>Minimal zero-allocation HTTP/1.x server for .NET 8+. Native AOT compatible. Built on raw sockets with a sliding receive window and pooled buffers for an allocation-free steady-state fast path.</Description>
-        <PackageReleaseNotes>   Breaking changes:
-   1 - Only one response per request: a second WriteAsync / WritePartialAsync / StartChunkedResponseAsync for the same request throws InvalidOperationException. New HttpResponseWriter.HasStarted.
-   2 - HttpHeader and the contentType argument reject CR, LF and other control characters with ArgumentException (prevents response splitting).
-   3 - The keepAlive argument can only narrow the request's choice: keepAlive: true for a request that sent Connection: close now answers Connection: close, and keepAlive: false now closes the connection.
-   Behaviour changes:
-   4 - A handler that writes nothing gets an empty 200; an unfinished chunked response is terminated automatically; an exception after the response started closes the connection instead of appending a 500.
-   5 - Streaming (GetStream / chunked API) to HTTP/1.0 clients uses a close-delimited body instead of chunked encoding.
-   Fixes:
-   6 - Connection header parsed as a case-insensitive token list ("Close", "close, TE", repeated headers).
-   7 - Header lines without a colon and chunk extensions with control bytes are rejected with 400.
-   8 - Trailers no longer leak into the next keep-alive response; HEAD suppresses body bytes on the writer-level chunked API.
-   9 - Content-Type length included in the response buffer estimate (long values could overrun the buffer).
-   10 - MultipartParser: CRLF-prefixed delimiter, empty parts and header-less parts handled, Content-Disposition parameters matched by name.
-   11 - Range parsing accepts only a single all-digit range.
-   Tooling: CI on Ubuntu and macOS with a Native AOT smoke test; releases published from CI via NuGet Trusted Publishing.</PackageReleaseNotes>
+        <PackageReleaseNotes>   Breaking changes (with migration):
+   1 - HttpMethod is renamed to RequestMethod; the old name collided with System.Net.Http.HttpMethod, which ImplicitUsings imports into every console project. Replace HttpMethod with RequestMethod and drop any "using HttpMethod = Anka.HttpMethod;" alias.
+   2 - MultipartParser and MultipartPart moved from Anka.Internal to the Anka namespace. Remove "using Anka.Internal;".
+   3 - WriteAsync and StartChunkedResponseAsync throw ArgumentOutOfRangeException for status codes below 200 or above 999 (1xx codes cannot be a final response).
+   4 - The CancellationToken passed to the handler is now cancelled when the shutdown timeout expires, not as soon as shutdown starts.
+   5 - Server no longer writes "Listening on ..." to standard output. Subscribe to Server.ListeningStarted if you relied on it.
+   New:
+   6 - Graceful shutdown: cancelling the StartAsync token stops accepting, closes idle connections, lets requests already in the handler finish with Connection: close, and aborts the rest after ServerOptions.ShutdownTimeout (default 10 s; TimeSpan.Zero keeps the old immediate abort). StartAsync returns once every connection has ended.
+   7 - IPv6 listening: host "::1" for IPv6 loopback, "::" for all interfaces (dual-stack, also accepts IPv4). ListeningStarted reports the bound endpoint.
+   8 - HttpRequest.TryGetRange(length, out start, out end) resolves a single-range Range header (bytes=a-b, a-, -n) for GET requests; pass the result to WritePartialAsync.
+   9 - MultipartParser.TryGetBoundary(contentType, out boundary) reads the boundary from a multipart/form-data Content-Type.
+   10 - Standard reason phrases for every RFC 9110 status code plus common extensions (e.g. 422 Unprocessable Content, 502 Bad Gateway); unknown codes are sent with an empty reason phrase instead of "Unknown".
+   Documentation: README rewritten as a getting-started guide with verified recipes (routing, query strings, JSON source generation, CORS, streaming, Range, ETag, uploads, Docker, shutdown) and an accurate API reference.</PackageReleaseNotes>
         <PackageTags>http;server;aot;native-aot;zero-allocation;high-performance;minimal;networking;tcp;http1</PackageTags>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <Copyright>Copyright (c) 2026 Selçuk Güral</Copyright>
