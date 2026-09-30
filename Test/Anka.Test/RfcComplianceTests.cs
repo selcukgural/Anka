@@ -24,7 +24,7 @@ public class RfcComplianceTests
         var req = CreateRequest();
         var result = TryParseResult(raw, req);
         Assert.Equal(HttpParseResult.Success, result);
-        Assert.Equal(HttpMethod.Get, req.Method);
+        Assert.Equal(RequestMethod.Get, req.Method);
         req.Return();
     }
 

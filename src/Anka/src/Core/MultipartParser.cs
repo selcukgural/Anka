@@ -1,6 +1,6 @@
 using System.Buffers;
 
-namespace Anka.Internal;
+namespace Anka;
 
 /// <summary>
 /// A zero-allocation parser for multipart/form-data bodies.
@@ -27,6 +27,72 @@ public ref struct MultipartParser
         boundary.CopyTo(_delimiter.AsSpan(4));
         _started = false;
         _finished = false;
+    }
+
+    /// <summary>
+    /// Extracts the <c>boundary</c> parameter from a <c>multipart/form-data</c> Content-Type value such as
+    /// <c>multipart/form-data; boundary="----abc"</c>. The media type and parameter name are matched
+    /// case-insensitively; surrounding quotes are removed.
+    /// </summary>
+    /// <returns><see langword="false"/> when the value is not <c>multipart/form-data</c> or has no boundary.</returns>
+    public static bool TryGetBoundary(ReadOnlySpan<byte> contentType, out ReadOnlySpan<byte> boundary)
+    {
+        boundary = default;
+
+        var semicolon = contentType.IndexOf((byte)';');
+        var mediaType = HttpParser.TrimOws(semicolon < 0 ? contentType : contentType[..semicolon]);
+        if (semicolon < 0 || !HttpParser.AsciiEqualsIgnoreCase(mediaType, "multipart/form-data"u8))
+        {
+            return false;
+        }
+
+        // Parameters: *( ";" OWS name "=" ( token / quoted-string ) ). A quoted value may contain ";".
+        var rest = contentType[(semicolon + 1)..];
+        while (!rest.IsEmpty)
+        {
+            rest = rest.TrimStart(" \t;"u8);
+            var eq = rest.IndexOf((byte)'=');
+            if (eq <= 0)
+            {
+                return false;
+            }
+
+            var name = HttpParser.TrimOws(rest[..eq]);
+            rest = rest[(eq + 1)..].TrimStart(" \t"u8);
+
+            ReadOnlySpan<byte> value;
+            if (!rest.IsEmpty && rest[0] == (byte)'"')
+            {
+                var close = rest[1..].IndexOf((byte)'"');
+                if (close < 0)
+                {
+                    return false;
+                }
+
+                value = rest.Slice(1, close);
+                rest = rest[(close + 2)..];
+            }
+            else
+            {
+                var next = rest.IndexOf((byte)';');
+                value = HttpParser.TrimOws(next < 0 ? rest : rest[..next]);
+                rest = next < 0 ? default : rest[next..];
+            }
+
+            if (HttpParser.AsciiEqualsIgnoreCase(name, "boundary"u8))
+            {
+                // RFC 2046 §5.1.1: 1 to 70 characters.
+                if (value.IsEmpty || value.Length > 70)
+                {
+                    return false;
+                }
+
+                boundary = value;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public bool TryReadNextPart(out MultipartPart part)

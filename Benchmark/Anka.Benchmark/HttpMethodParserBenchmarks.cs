@@ -102,63 +102,63 @@ public class HttpMethodParserBenchmarks
     /// <summary>
     /// Parses the stored input byte array and identifies whether it represents an HTTP GET method.
     /// </summary>
-    /// <returns>The HTTP method corresponding to the parsed input, or <see cref="HttpMethod.Unknown"/> if the input does not match.</returns>
+    /// <returns>The HTTP method corresponding to the parsed input, or <see cref="RequestMethod.Unknown"/> if the input does not match.</returns>
     [Benchmark(Baseline = true)]
-    public HttpMethod Parse_Get()     => HttpMethodParser.Parse(_get);
+    public RequestMethod Parse_Get()     => HttpMethodParser.Parse(_get);
 
     /// <summary>
     /// Parses the HTTP POST method from a byte array representation.
     /// </summary>
-    /// <returns>The <see cref="HttpMethod.Post"/> enumeration value if the input matches the POST method; otherwise, <see cref="HttpMethod.Unknown"/>.
+    /// <returns>The <see cref="RequestMethod.Post"/> enumeration value if the input matches the POST method; otherwise, <see cref="RequestMethod.Unknown"/>.
     /// </returns>
     [Benchmark]
-    public HttpMethod Parse_Post()    => HttpMethodParser.Parse(_post);
+    public RequestMethod Parse_Post()    => HttpMethodParser.Parse(_post);
 
     /// <summary>Parses the HTTP PUT method from a given byte span.</summary>
-    /// <return>Returns <see cref="HttpMethod.Put"/> if the span represents a valid PUT method; otherwise, returns <see cref="HttpMethod.Unknown"/>.</return>
+    /// <return>Returns <see cref="RequestMethod.Put"/> if the span represents a valid PUT method; otherwise, returns <see cref="RequestMethod.Unknown"/>.</return>
     [Benchmark]
-    public HttpMethod Parse_Put()     => HttpMethodParser.Parse(_put);
+    public RequestMethod Parse_Put()     => HttpMethodParser.Parse(_put);
 
     /// <summary>
     /// Benchmarks the parsing of the HTTP DELETE method.
     /// </summary>
-    /// <returns>The parsed <see cref="HttpMethod.Delete"/> if the input matches the DELETE method; otherwise, <see cref="HttpMethod.Unknown"/>.</returns>
+    /// <returns>The parsed <see cref="RequestMethod.Delete"/> if the input matches the DELETE method; otherwise, <see cref="RequestMethod.Unknown"/>.</returns>
     [Benchmark]
-    public HttpMethod Parse_Delete()  => HttpMethodParser.Parse(_delete);
+    public RequestMethod Parse_Delete()  => HttpMethodParser.Parse(_delete);
 
     /// <summary>Parses the "HEAD" HTTP method from the provided input.</summary>
-    /// <returns>An <see cref="HttpMethod"/> representing the "HEAD" method, or <see cref="HttpMethod.Unknown"/> if parsing fails.</returns>
+    /// <returns>An <see cref="RequestMethod"/> representing the "HEAD" method, or <see cref="RequestMethod.Unknown"/> if parsing fails.</returns>
     [Benchmark]
-    public HttpMethod Parse_Head()    => HttpMethodParser.Parse(_head);
+    public RequestMethod Parse_Head()    => HttpMethodParser.Parse(_head);
 
     /// <summary>
     /// Parses the input data to determine if it represents the HTTP OPTIONS method.
     /// </summary>
-    /// <returns>The HTTP method corresponding to OPTIONS if the input matches; otherwise, <see cref="HttpMethod.Unknown"/>.</returns>
+    /// <returns>The HTTP method corresponding to OPTIONS if the input matches; otherwise, <see cref="RequestMethod.Unknown"/>.</returns>
     [Benchmark]
-    public HttpMethod Parse_Options() => HttpMethodParser.Parse(_options);
+    public RequestMethod Parse_Options() => HttpMethodParser.Parse(_options);
 
     /// <summary>Parses the specified byte span to identify the HTTP PATCH method.</summary>
-    /// <returns>An <c>HttpMethod</c> indicating HTTP PATCH if the byte span matches; otherwise, <c>HttpMethod.Unknown</c>.</returns>
+    /// <returns>An <c>RequestMethod</c> indicating HTTP PATCH if the byte span matches; otherwise, <c>RequestMethod.Unknown</c>.</returns>
     [Benchmark]
-    public HttpMethod Parse_Patch()   => HttpMethodParser.Parse(_patch);
+    public RequestMethod Parse_Patch()   => HttpMethodParser.Parse(_patch);
 
     /// <summary>Parses the HTTP TRACE method from the provided byte array.</summary>
-    /// <returns>An <see cref="HttpMethod"/> value representing the TRACE method if successfully parsed; otherwise, <see cref="HttpMethod.Unknown"/>.</returns>
+    /// <returns>An <see cref="RequestMethod"/> value representing the TRACE method if successfully parsed; otherwise, <see cref="RequestMethod.Unknown"/>.</returns>
     [Benchmark]
-    public HttpMethod Parse_Trace()   => HttpMethodParser.Parse(_trace);
+    public RequestMethod Parse_Trace()   => HttpMethodParser.Parse(_trace);
 
     /// <summary>Parses the input data to identify the HTTP CONNECT method.</summary>
     /// <returns>An enumeration value representing the HTTP CONNECT method.</returns>
     [Benchmark]
-    public HttpMethod Parse_Connect() => HttpMethodParser.Parse(_connect);
+    public RequestMethod Parse_Connect() => HttpMethodParser.Parse(_connect);
 
     /// <summary>
     /// Parses an unknown HTTP method, falling through all predefined cases to return the default case.
     /// </summary>
-    /// <returns>The <see cref="HttpMethod.Unknown"/> value, indicating an unrecognized HTTP method.</returns>
+    /// <returns>The <see cref="RequestMethod.Unknown"/> value, indicating an unrecognized HTTP method.</returns>
     [Benchmark]
-    public HttpMethod Parse_Unknown() => HttpMethodParser.Parse(_unknown);
+    public RequestMethod Parse_Unknown() => HttpMethodParser.Parse(_unknown);
 
     /// <summary>
     /// Converts the specified string into a byte array using ASCII encoding.

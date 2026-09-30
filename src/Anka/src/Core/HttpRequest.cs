@@ -30,7 +30,7 @@ public sealed class HttpRequest
     /// <summary>
     /// Represents the HTTP method of the request, such as GET, POST, PUT, etc.
     /// </summary>
-    public HttpMethod Method { get; internal set; }
+    public RequestMethod Method { get; internal set; }
 
     /// <summary>
     /// Represents the HTTP version of the request. This property is used to indicate
@@ -86,6 +86,28 @@ public sealed class HttpRequest
     /// Uses a zero-allocation span comparison — avoids materializing the path string.
     /// </summary>
     public bool PathEquals(ReadOnlySpan<byte> path) => PathBytes.SequenceEqual(path);
+
+    /// <summary>
+    /// Reads a single-range <c>Range</c> header (<c>bytes=0-99</c>, <c>bytes=100-</c>, <c>bytes=-50</c>) and
+    /// resolves it against a representation of <paramref name="representationLength"/> bytes.
+    /// </summary>
+    /// <param name="representationLength">Length of the full response body the range refers to.</param>
+    /// <param name="start">First byte of the range (inclusive).</param>
+    /// <param name="end">Last byte of the range (inclusive), clamped to the representation.</param>
+    /// <returns>
+    /// <see langword="true"/> when the request is a <c>GET</c> with a satisfiable single range; pass the result
+    /// to <see cref="HttpResponseWriter.WritePartialAsync"/>. <see langword="false"/> when there is no
+    /// <c>Range</c> header, the method is not <c>GET</c> (RFC 9110 §14.2), or the value is malformed,
+    /// multi-range or unsatisfiable; send the full <c>200</c> response in that case.
+    /// </returns>
+    public bool TryGetRange(long representationLength, out long start, out long end)
+    {
+        start = 0;
+        end = 0;
+        return Method == RequestMethod.Get &&
+               Headers.TryGetValue(HttpHeaderNames.Range, out var value) &&
+               HttpParser.TryResolveRange(value, representationLength, out start, out end);
+    }
 
     /// <summary>
     /// Gets the decoded path string of the HTTP request.
@@ -197,7 +219,7 @@ public sealed class HttpRequest
         // Keep Buffer — it will be reassigned by the parser if needed.
         // Keep BodyBuffer — returned only if a new body needs a different size.
 
-        Method       = HttpMethod.Unknown;
+        Method       = RequestMethod.Unknown;
         Version      = HttpVersion.Unknown;
         Body         = default;
         IsKeepAlive  = false;
