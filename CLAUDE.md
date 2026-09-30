@@ -32,6 +32,8 @@ dotnet run --project Test/LoadTest/Anka.Wrk.LoadTest --configuration Release
 
 SDK is pinned via `global.json` to .NET 8.0.0 (`rollForward: latestMajor`).
 
+CI (`.github/workflows/ci.yml`) runs build + tests on Ubuntu and macOS, a Native AOT publish of `Anka.HttpConsole` that fails on any `IL` warning followed by an HTTP smoke test, and `dotnet pack`. Releases come from `.github/workflows/release.yml`: push a `v<Version>` tag on `main` that matches `<Version>` in `src/Anka/Anka.csproj`; it publishes to nuget.org via Trusted Publishing (OIDC, `nuget` environment) and creates the GitHub Release. Keep third-party actions pinned to commit SHAs and `id-token: write` on the publish job only.
+
 ## Architecture
 
 ### Request lifecycle (one loop per keep-alive TCP connection)

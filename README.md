@@ -1148,3 +1148,29 @@ Run the comparison harness:
 ```bash
 dotnet run --project Test/LoadTest/Anka.Wrk.LoadTest --configuration Release
 ```
+
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+
+- **build & test** on Ubuntu and macOS (`dotnet build` + `dotnet test`, TRX results uploaded as artifacts);
+- **native aot smoke test**: publishes `Anka.HttpConsole` with `PublishAot`, fails on any `IL` trim/AOT warning, then starts the binary and checks `/plaintext` and `/json` over HTTP;
+- **pack**: builds the NuGet package.
+
+### Releasing
+
+Releases are cut by pushing a tag that matches `<Version>` in `src/Anka/Anka.csproj`:
+
+```bash
+# 1. Bump <Version> (and <PackageReleaseNotes>) in src/Anka/Anka.csproj, merge to main
+# 2. Tag the merge commit on main and push the tag
+git tag v0.0.1-beta.5
+git push origin v0.0.1-beta.5
+```
+
+`.github/workflows/release.yml` then:
+
+1. checks that the tag equals the project version and points to a commit on `main`;
+2. builds, runs the tests and packs `Anka.nupkg` + `Anka.snupkg`;
+3. publishes to nuget.org with [Trusted Publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing) (OIDC, no stored API key) from the `nuget` environment;
+4. creates a GitHub Release with generated notes and the packages attached (marked pre-release for versions with a `-suffix`).

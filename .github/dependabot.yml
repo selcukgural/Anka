@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directories:
+      - /src/Anka
+      - /Test/Anka.Test
+      - /Benchmark/Anka.Benchmark
+      - /Test/LoadTest/Anka.HttpConsole
+      - /Test/LoadTest/Anka.Wrk.LoadTest
+      - /Test/LoadTest/Kestrel.HttpConsole
+    schedule:
+      interval: weekly
+    groups:
+      test-and-tooling:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
