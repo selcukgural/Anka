@@ -30,11 +30,15 @@ public class ChunkedBodyParserBenchmarks
     [Benchmark]
     public int Decode_WithTrailers() => Decode(_chunkedWithTrailers);
 
+    // Trailer storage allocated once; HttpHeaders needs a backing buffer before Add() can store fields.
+    private static readonly byte[] TrailerBuffer = new byte[256];
+
     private static int Decode(ReadOnlySpan<byte> payload)
     {
         var offset = 0;
         var totalBodyBytes = 0;
         var trailers = new HttpHeaders();
+        trailers.InitBuffer(TrailerBuffer, 0);
 
         while (true)
         {

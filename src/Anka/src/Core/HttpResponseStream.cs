@@ -29,11 +29,20 @@ public sealed class HttpResponseStream : Stream
     /// <param name="suppressBody">When <c>true</c> (e.g. HEAD requests), headers are still sent but chunk data and the final terminating chunk are suppressed.</param>
     internal void Initialize(HttpResponseWriter writer, CancellationToken cancellationToken, bool suppressBody = false)
     {
+        // GetStream() called again while this request's stream is still open: hand back the same state.
+        if (_writer == writer && _isStarted && !_isFinished && writer.IsChunkedResponseOpen)
+        {
+            return;
+        }
+
         _writer = writer;
         _isStarted = false;
         _isFinished = false;
         _suppressBody = suppressBody;
         _cancellationToken = cancellationToken;
+
+        // The stream instance is connection-scoped; trailers from the previous request must not leak.
+        _trailers?.Clear();
     }
 
     /// <summary>
@@ -222,7 +231,8 @@ public sealed class HttpResponseStream : Stream
             _isStarted = true;
         }
 
-        if (!_suppressBody)
+        // The writer drops the terminating chunk itself for HEAD and close-delimited responses.
+        if (_writer.IsChunkedResponseOpen)
         {
             if (_trailers is { Count: > 0 })
             {

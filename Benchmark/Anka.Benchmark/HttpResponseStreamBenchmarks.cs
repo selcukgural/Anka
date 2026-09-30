@@ -92,5 +92,10 @@ public class HttpResponseStreamBenchmarks
     /// Cold path: called once at the start of each streaming response.
     /// </summary>
     [Benchmark]
-    public ValueTask StartChunkedResponse() => _writer.StartChunkedResponseAsync(200);
+    public ValueTask StartChunkedResponse()
+    {
+        // Each invocation models a new request on the same connection; only one response may start per request.
+        _writer.ResetForRequest();
+        return _writer.StartChunkedResponseAsync(200);
+    }
 }

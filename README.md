@@ -334,10 +334,10 @@ Anka targets HTTP/1.x and implements the following behaviour from the core HTTP 
 | Host header validation | Required for HTTP/1.1; missing / duplicate / mismatched Host → `400` | §5.4 |
 | Content-Length | Parsed and validated; conflicting duplicates → `400`; malformed values → `400`; missing for POST/PUT/PATCH → `411` | §3.3.2 |
 | Transfer-Encoding: chunked | Chunk-size parsing (hex), chunk data + CRLF validation, trailer headers, body reassembly into `req.Body` | §4.1 |
-| Chunked response encoding | Supported via `response.GetStream()` — returns a `Stream` that sends `Transfer-Encoding: chunked`; headers + terminating chunk managed automatically | §4.1 |
+| Chunked response encoding | Supported via `response.GetStream()` — returns a `Stream` that sends `Transfer-Encoding: chunked`; headers + terminating chunk managed automatically. HTTP/1.0 clients get a close-delimited body instead (chunked does not exist in HTTP/1.0) | §4.1, §7 |
 | Response trailer headers | Supported via `stream.AddTrailer(header)` when using `response.GetStream()` | §4.1.2 |
 | Expect: 100-continue | Automatic `100 Continue` interim response before body read | §5.1.1 |
-| Connection management | HTTP/1.1 keep-alive by default; HTTP/1.0 close by default; `Connection: close` / `keep-alive` honoured | §6.1, §6.3 |
+| Connection management | HTTP/1.1 keep-alive by default; HTTP/1.0 close by default; `Connection` parsed as a case-insensitive token list (`Close`, `close, TE`, repeated headers). A response can only narrow keep-alive: `keepAlive: false` from the handler closes the connection after the response | §6.1, §6.3 |
 | Header normalisation | Names lowercased on ingestion; repeated headers enumerable via `TryGetAllValues(...)` | §3.2.2 |
 | Message body suppression | HEAD responses and `304 Not Modified` suppress payload bytes while preserving representation headers; `1xx` / `204` omit body-describing headers | §3.3 |
 
@@ -369,7 +369,7 @@ Not yet implemented: `If-Range` conditional revalidation (the header name consta
 
 | Feature | Behaviour | Reference |
 |---|---|---|
-| `multipart/form-data` parsing | `MultipartParser` (internal `ref struct`) splits a body by boundary into parts via `TryReadNextPart`, and reads `Content-Disposition` `name`/`filename` per part — zero-allocation | RFC 7578 |
+| `multipart/form-data` parsing | `MultipartParser` (public `ref struct` in `Anka.Internal`) splits a body by boundary into parts via `TryReadNextPart`, and reads `Content-Disposition` `name`/`filename` per part — zero-allocation | RFC 7578 |
 
 ### Error Responses
 
@@ -559,7 +559,7 @@ ValueTask WriteAsync(
 | `statusCode`   | HTTP status code (200, 404, 500, etc.)                                             |
 | `body`         | Response body (optional)                                                           |
 | `contentType`  | Content-Type header value as UTF-8 bytes (e.g., `"application/json"u8`)            |
-| `keepAlive`    | `Connection: keep-alive` or `close`?                                               |
+| `keepAlive`    | `Connection: keep-alive` or `close`. Can only narrow the request's choice; `false` closes the connection after the response. |
 | `extraHeaders` | Zero-allocation per-request headers. Pre-build a `static readonly HttpHeader[]` for hot paths. |
 
 > **Fluent API:** Use `response.AddHeader(name, value).WriteAsync(...)` to attach extra headers without building an array. See `HttpResponseWriterExtensions`.
@@ -578,7 +578,13 @@ await stream.WriteAsync(chunk2, cancellationToken);
 // terminating chunk sent on DisposeAsync
 ```
 
-`HttpResponseStream` is connection-scoped and reused across keep-alive requests — `GetStream()` reinitialises it without allocating. HEAD requests are handled correctly: headers are sent but chunk data is suppressed.
+`HttpResponseStream` is connection-scoped and reused across keep-alive requests — `GetStream()` reinitialises it without allocating. HEAD requests are handled correctly: headers are sent but chunk data is suppressed. For HTTP/1.0 clients the body is written without framing and the connection is closed after it; trailers are dropped.
+
+**One response per request.** `WriteAsync`, `WritePartialAsync`, `StartChunkedResponseAsync` and the first write to `GetStream()` each start the response; starting a second one for the same request throws `InvalidOperationException`. Check `response.HasStarted` if a code path may already have written. When the handler returns:
+
+- without having written anything, Anka sends `200 OK` with an empty body;
+- with a chunked response still open (stream not disposed, `FinishChunkedResponseAsync` not called), Anka sends the terminating chunk;
+- by throwing, Anka logs the exception and sends `500` with `Connection: close` if nothing was written yet, otherwise it only closes the connection.
 
 **Supported Status Code Reason Phrases:**
 100 Continue · 200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 414 URI Too Long · 431 Request Header Fields Too Large · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · 505 HTTP Version Not Supported · others → "Unknown"
@@ -732,6 +738,8 @@ new HttpHeader("x-custom-header"u8.ToArray(), "value"u8.ToArray())
 // String-based (allocates — use at startup only)
 new HttpHeader("x-custom-header", "value")
 ```
+
+The constructor throws `ArgumentException` when the name is empty or not an HTTP token, or the value contains CR, LF or another control character (HTAB and bytes ≥ 0x80 are allowed). `contentType` passed to `WriteAsync` is validated the same way. This prevents response splitting when header values come from user input.
 
 | Member  | Type                    | Description                          |
 |---------|-------------------------|--------------------------------------|
@@ -1116,6 +1124,7 @@ dotnet test Anka.slnx --nologo
 | `RequestTargetSizeLimitTests` | 7 | Target size enforcement, 414 responses |
 | `HttpMethodParserTests` | 6 | All HTTP method tokens, unknown methods |
 | `StreamingTests` | 4 | Chunked response stream, `GetStream()`, `CopyToAsync` |
+| `HttpHardeningRegressionTests` | 57 | `Connection` token lists, malformed header lines, chunk extensions, Range parsing, one-response-per-request, keep-alive agreement, HTTP/1.0 streaming, response header validation, multipart delimiters |
 
 ---
 

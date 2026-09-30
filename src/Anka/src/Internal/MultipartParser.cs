@@ -9,81 +9,89 @@ namespace Anka.Internal;
 public ref struct MultipartParser
 {
     private SequenceReader<byte> _reader;
-    private readonly byte[] _boundary;
+
+    /// <summary>
+    /// "\r\n--" + boundary. RFC 2046 §5.1.1: the CRLF before "--boundary" belongs to the delimiter,
+    /// not to the preceding part's content. The first boundary has no leading CRLF, so it is matched
+    /// with <c>_delimiter[2..]</c>.
+    /// </summary>
+    private readonly byte[] _delimiter;
+    private bool _started;
     private bool _finished;
 
     public MultipartParser(ReadOnlySequence<byte> body, ReadOnlySpan<byte> boundary)
     {
         _reader = new SequenceReader<byte>(body);
-        // boundary in the body is prefixed with "--"
-        _boundary = new byte[boundary.Length + 2];
-        _boundary[0] = (byte)'-';
-        _boundary[1] = (byte)'-';
-        boundary.CopyTo(_boundary.AsSpan(2));
+        _delimiter = new byte[boundary.Length + 4];
+        "\r\n--"u8.CopyTo(_delimiter);
+        boundary.CopyTo(_delimiter.AsSpan(4));
+        _started = false;
         _finished = false;
     }
 
     public bool TryReadNextPart(out MultipartPart part)
     {
         part = default;
-        if (_finished) return false;
+        if (_finished)
+        {
+            return false;
+        }
 
-        // RFC 7578: parts are separated by boundary.
-        // First boundary might be preceded by preamble (ignored).
-        if (!_reader.TryReadTo(out ReadOnlySequence<byte> _, _boundary, advancePastDelimiter: true))
+        if (!_started)
+        {
+            // The first boundary may be preceded by a preamble, which is ignored.
+            if (!_reader.TryReadTo(out ReadOnlySequence<byte> _, _delimiter.AsSpan(2), advancePastDelimiter: true))
+            {
+                _finished = true;
+                return false;
+            }
+
+            _started = true;
+        }
+
+        // Close delimiter: boundary followed by "--".
+        if (_reader.IsNext("--"u8, advancePast: true))
         {
             _finished = true;
             return false;
         }
 
-        // Check if it's the end boundary (boundary + "--")
-        if (_reader.Remaining >= 2 && _reader.IsNext("--"u8, advancePast: true))
-        {
-            _finished = true;
-            return false;
-        }
-
-        // Must be followed by CRLF
+        // Rest of the boundary line (optional transport padding) up to CRLF.
         if (!_reader.TryReadTo(out ReadOnlySequence<byte> _, "\r\n"u8, advancePastDelimiter: true))
         {
+            _finished = true;
             return false;
         }
 
-        // Now we are at the start of part headers.
-        // Headers end with double CRLF.
+        // Part headers end with an empty line; a part may also have no headers at all.
         var headersStart = _reader.Position;
-        if (!_reader.TryReadTo(out ReadOnlySequence<byte> _, "\r\n\r\n"u8, advancePastDelimiter: false))
+        ReadOnlySequence<byte> headersSeq;
+        if (_reader.IsNext("\r\n"u8, advancePast: true))
         {
+            headersSeq = _reader.Sequence.Slice(headersStart, headersStart);
+        }
+        else
+        {
+            if (!_reader.TryReadTo(out ReadOnlySequence<byte> _, "\r\n\r\n"u8, advancePastDelimiter: false))
+            {
+                _finished = true;
+                return false;
+            }
+
+            headersSeq = _reader.Sequence.Slice(headersStart, _reader.Position);
+            _reader.Advance(4);
+        }
+
+        // The content runs up to the next "\r\n--boundary".
+        var contentStart = _reader.Position;
+        if (!_reader.TryReadTo(out ReadOnlySequence<byte> contentSeq, _delimiter, advancePastDelimiter: true))
+        {
+            _finished = true;
             return false;
         }
-        var headersEnd = _reader.Position;
-        var headersSeq = _reader.Sequence.Slice(headersStart, headersEnd);
-        _reader.Advance(4); // Skip \r\n\r\n
 
-        // Content of the part ends at the next boundary.
-        var remaining = _reader.UnreadSequence;
-        var boundaryIndex = FindBoundary(remaining, _boundary);
-        
-        if (boundaryIndex == -1)
-        {
-            return false;
-        }
-
-        var contentSeq = remaining.Slice(0, boundaryIndex - 2); // -2 to remove CRLF before boundary
-        _reader.Advance(boundaryIndex); // Position is now at the start of the boundary
-
-        part = new MultipartPart(headersSeq, contentSeq);
+        part = new MultipartPart(headersSeq, _reader.Sequence.Slice(contentStart, contentSeq.End));
         return true;
-    }
-
-    private static long FindBoundary(ReadOnlySequence<byte> seq, ReadOnlySpan<byte> boundary)
-    {
-        var reader = new SequenceReader<byte>(seq);
-        if (reader.TryReadTo(out ReadOnlySequence<byte> _, boundary, advancePastDelimiter: false))
-        {
-            return reader.Consumed;
-        }
-        return -1;
     }
 }
 
@@ -121,21 +129,46 @@ public readonly ref struct MultipartPart(ReadOnlySequence<byte> headers, ReadOnl
         return false;
     }
 
+    /// <summary>
+    /// Reads the <c>name</c> and <c>filename</c> parameters from a Content-Disposition value such as
+    /// <c>form-data; name="field"; filename="a.txt"</c>. Parameters are matched by their exact name,
+    /// so <c>filename=</c> is never mistaken for <c>name=</c>, and a <c>;</c> inside a quoted value
+    /// does not split it.
+    /// </summary>
     private static bool TryParseContentDisposition(ReadOnlySequence<byte> line, out ReadOnlySequence<byte> name, out ReadOnlySequence<byte> fileName)
     {
         name = default;
         fileName = default;
 
-        var nameIdx = FindToken(line, "name="u8);
-        if (nameIdx != -1)
-        {
-            name = ExtractQuotedValue(line.Slice(nameIdx + 5));
-        }
+        ReadOnlySpan<byte> span = line.IsSingleSegment ? line.FirstSpan : line.ToArray();
 
-        var fileIdx = FindToken(line, "filename="u8);
-        if (fileIdx != -1)
+        // Skip the disposition type ("form-data").
+        var offset = IndexOfUnquoted(span, (byte)';');
+        while (offset >= 0)
         {
-            fileName = ExtractQuotedValue(line.Slice(fileIdx + 9));
+            offset++;
+            var rest = span[offset..];
+            var segmentLength = IndexOfUnquoted(rest, (byte)';');
+            var segment = segmentLength < 0 ? rest : rest[..segmentLength];
+
+            var eq = segment.IndexOf((byte)'=');
+            if (eq > 0)
+            {
+                var parameterName = HttpParser.TrimOws(segment[..eq]);
+                if (TryGetParameterValue(segment, eq + 1, out var valueStart, out var valueLength))
+                {
+                    if (HttpParser.AsciiEqualsIgnoreCase(parameterName, "name"u8))
+                    {
+                        name = line.Slice(offset + valueStart, valueLength);
+                    }
+                    else if (HttpParser.AsciiEqualsIgnoreCase(parameterName, "filename"u8))
+                    {
+                        fileName = line.Slice(offset + valueStart, valueLength);
+                    }
+                }
+            }
+
+            offset = segmentLength < 0 ? -1 : offset + segmentLength;
         }
 
         return !name.IsEmpty || !fileName.IsEmpty;
@@ -144,25 +177,74 @@ public readonly ref struct MultipartPart(ReadOnlySequence<byte> headers, ReadOnl
     private static long FindToken(ReadOnlySequence<byte> seq, ReadOnlySpan<byte> token)
     {
         var reader = new SequenceReader<byte>(seq);
-        if (reader.TryReadTo(out ReadOnlySequence<byte> _, token, advancePastDelimiter: false))
-        {
-            return reader.Consumed;
-        }
-        return -1;
+        return reader.TryReadTo(out ReadOnlySequence<byte> _, token, advancePastDelimiter: false) ? reader.Consumed : -1;
     }
 
-    private static ReadOnlySequence<byte> ExtractQuotedValue(ReadOnlySequence<byte> seq)
+    /// <summary>
+    /// Locates a parameter value starting at <paramref name="start"/>: the inside of a quoted-string,
+    /// or a bare token with surrounding whitespace removed.
+    /// </summary>
+    private static bool TryGetParameterValue(ReadOnlySpan<byte> segment, int start, out int valueStart, out int valueLength)
     {
-        var reader = new SequenceReader<byte>(seq);
-        if (reader.TryAdvanceTo((byte)'"', advancePastDelimiter: true))
+        while (start < segment.Length && segment[start] is (byte)' ' or (byte)'\t')
         {
-            var start = reader.Position;
-            if (reader.TryAdvanceTo((byte)'"', advancePastDelimiter: false))
+            start++;
+        }
+
+        if (start < segment.Length && segment[start] == (byte)'"')
+        {
+            var close = IndexOfUnquoted(segment[(start + 1)..], (byte)'"', insideQuotes: true);
+            if (close < 0)
             {
-                var end = reader.Position;
-                return seq.Slice(start, end);
+                valueStart = valueLength = 0;
+                return false;
+            }
+
+            valueStart = start + 1;
+            valueLength = close;
+            return true;
+        }
+
+        var token = HttpParser.TrimOws(segment[start..]);
+        valueStart = start;
+        valueLength = token.Length;
+        return valueLength > 0;
+    }
+
+    /// <summary>
+    /// Index of <paramref name="value"/> outside quoted-strings (honouring backslash escapes), or -1.
+    /// With <paramref name="insideQuotes"/> the scan starts inside a quoted-string, so the first
+    /// unescaped quote is returned.
+    /// </summary>
+    private static int IndexOfUnquoted(ReadOnlySpan<byte> span, byte value, bool insideQuotes = false)
+    {
+        var quoted = insideQuotes;
+        for (var i = 0; i < span.Length; i++)
+        {
+            var b = span[i];
+            if (quoted && b == (byte)'\\')
+            {
+                i++;
+                continue;
+            }
+
+            if (b == (byte)'"')
+            {
+                if (insideQuotes && value == (byte)'"')
+                {
+                    return i;
+                }
+
+                quoted = !quoted;
+                continue;
+            }
+
+            if (!quoted && b == value)
+            {
+                return i;
             }
         }
-        return default;
+
+        return -1;
     }
 }
