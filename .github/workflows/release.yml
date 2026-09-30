@@ -63,8 +63,10 @@ jobs:
       - name: Test
         run: dotnet test Anka.slnx -c Release --no-build
 
+      # Anka.csproj sets GeneratePackageOnBuild; on a clean checkout that makes pack look for the
+      # assembly before it is built (NU5026), so turn it off for the explicit pack.
       - name: Pack
-        run: dotnet pack src/Anka/Anka.csproj -c Release -o artifacts
+        run: dotnet pack src/Anka/Anka.csproj -c Release -o artifacts -p:GeneratePackageOnBuild=false
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
