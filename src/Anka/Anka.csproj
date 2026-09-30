@@ -10,15 +10,24 @@
 
         <!-- NuGet package metadata -->
         <PackageId>Anka</PackageId>
-        <Version>0.0.1-beta.4</Version>
+        <Version>0.0.1-beta.5</Version>
         <Authors>Selçuk Güral</Authors>
         <Description>Minimal zero-allocation HTTP/1.x server for .NET 8+. Native AOT compatible. Built on raw sockets with a sliding receive window and pooled buffers for an allocation-free steady-state fast path.</Description>
-        <PackageReleaseNotes>   1 - Added support for Trailer headers in chunked responses via HttpResponseStream.AddTrailer.
-   2 - Enhanced RFC compliance: implemented leading CRLF skipping and strict validation for header names/folding.
-   3 - Enforced mandatory Content-Length/Transfer-Encoding for POST, PUT, and PATCH requests (411 Length Required).
-   4 - Improved framing security by rejecting requests containing both Content-Length and Transfer-Encoding headers.
-   5 - Expanded test suite to 254 tests covering edge-case RFC compliance and security.
-   6 - Updated documentation and class references for chunked streaming and feature support.</PackageReleaseNotes>
+        <PackageReleaseNotes>   Breaking changes:
+   1 - Only one response per request: a second WriteAsync / WritePartialAsync / StartChunkedResponseAsync for the same request throws InvalidOperationException. New HttpResponseWriter.HasStarted.
+   2 - HttpHeader and the contentType argument reject CR, LF and other control characters with ArgumentException (prevents response splitting).
+   3 - The keepAlive argument can only narrow the request's choice: keepAlive: true for a request that sent Connection: close now answers Connection: close, and keepAlive: false now closes the connection.
+   Behaviour changes:
+   4 - A handler that writes nothing gets an empty 200; an unfinished chunked response is terminated automatically; an exception after the response started closes the connection instead of appending a 500.
+   5 - Streaming (GetStream / chunked API) to HTTP/1.0 clients uses a close-delimited body instead of chunked encoding.
+   Fixes:
+   6 - Connection header parsed as a case-insensitive token list ("Close", "close, TE", repeated headers).
+   7 - Header lines without a colon and chunk extensions with control bytes are rejected with 400.
+   8 - Trailers no longer leak into the next keep-alive response; HEAD suppresses body bytes on the writer-level chunked API.
+   9 - Content-Type length included in the response buffer estimate (long values could overrun the buffer).
+   10 - MultipartParser: CRLF-prefixed delimiter, empty parts and header-less parts handled, Content-Disposition parameters matched by name.
+   11 - Range parsing accepts only a single all-digit range.
+   Tooling: CI on Ubuntu and macOS with a Native AOT smoke test; releases published from CI via NuGet Trusted Publishing.</PackageReleaseNotes>
         <PackageTags>http;server;aot;native-aot;zero-allocation;high-performance;minimal;networking;tcp;http1</PackageTags>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <Copyright>Copyright (c) 2026 Selçuk Güral</Copyright>
