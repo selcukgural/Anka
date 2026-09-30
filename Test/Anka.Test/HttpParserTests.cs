@@ -67,7 +67,7 @@ public class HttpParserTests
         const string raw = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
         Assert.True(TryParse(raw, out var req));
         Assert.NotNull(req);
-        Assert.Equal(HttpMethod.Get, req!.Method);
+        Assert.Equal(RequestMethod.Get, req!.Method);
         Assert.Equal(HttpVersion.Http11, req.Version);
         Assert.Equal("/", req.Path);
         Assert.Null(req.QueryString);
@@ -87,7 +87,7 @@ public class HttpParserTests
 
         Assert.True(TryParse(raw, out var req));
         Assert.NotNull(req);
-        Assert.Equal(HttpMethod.Post, req!.Method);
+        Assert.Equal(RequestMethod.Post, req!.Method);
         Assert.Equal("/api/data", req.Path);
         Assert.Equal(body, Encoding.ASCII.GetString(req.Body.Span));
         req.Return();

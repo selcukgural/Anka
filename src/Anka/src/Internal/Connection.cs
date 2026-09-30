@@ -26,7 +26,17 @@ internal sealed class Connection
     private readonly Socket _socket;
     private readonly RequestHandler _handler;
     private readonly ServerOptions _serverOptions;
+    /// <summary>Cancelled when the shutdown timeout expires; aborts the handler and closes the socket.</summary>
     private readonly CancellationToken _cancellationToken;
+
+    /// <summary>Cancelled when the server starts shutting down.</summary>
+    private readonly CancellationToken _stoppingToken;
+
+    /// <summary>
+    /// 1 while a request is between dispatch to the handler and the end of its response. Shutdown closes the
+    /// socket right away when this is 0, and otherwise lets the request finish.
+    /// </summary>
+    private int _inHandler;
 
     /// <summary>
     /// Absolute deadline (<see cref="Environment.TickCount64"/>, ms) for receiving the rest of the
@@ -44,12 +54,13 @@ internal sealed class Connection
     /// and utilizing <see cref="ServerOptions"/> for server configuration.
     /// It operates asynchronously and supports cancellation through a <see cref="CancellationToken"/>.
     /// </remarks>
-    private Connection(Socket socket, RequestHandler handler, ServerOptions serverOptions, CancellationToken cancellationToken)
+    private Connection(Socket socket, RequestHandler handler, ServerOptions serverOptions, CancellationToken stoppingToken, CancellationToken abortToken)
     {
         _socket         = socket;
         _handler        = handler;
         _serverOptions  = serverOptions;
-        _cancellationToken = cancellationToken;
+        _stoppingToken  = stoppingToken;
+        _cancellationToken = abortToken;
     }
 
     /// <summary>
@@ -58,12 +69,13 @@ internal sealed class Connection
     /// <param name="socket">The network socket associated with the connection.</param>
     /// <param name="handler">The delegate responsible for handling incoming HTTP requests.</param>
     /// <param name="serverOptions">The configuration options for the server.</param>
-    /// <param name="cancellationToken">A token to cancel the processing of the connection.</param>
+    /// <param name="stoppingToken">Cancelled when the server starts a graceful shutdown.</param>
+    /// <param name="abortToken">Cancelled when the shutdown timeout expires; aborts the connection.</param>
     /// <returns>A <see cref="Task"/> that completes when the connection is closed.</returns>
-    public static Task RunAsync(Socket socket, RequestHandler handler, ServerOptions serverOptions, CancellationToken cancellationToken)
+    public static Task RunAsync(Socket socket, RequestHandler handler, ServerOptions serverOptions, CancellationToken stoppingToken, CancellationToken abortToken)
     {
         socket.NoDelay = true;
-        return new Connection(socket, handler, serverOptions, cancellationToken).ProcessAsync();
+        return new Connection(socket, handler, serverOptions, stoppingToken, abortToken).ProcessAsync();
     }
 
     /// <summary>
@@ -76,7 +88,7 @@ internal sealed class Connection
     {
         var buf = ArrayPool<byte>.Shared.Rent(BufferSize);
         var request = HttpRequestPool.Rent();
-        using var writer = new HttpResponseWriter(_socket, _serverOptions.DefaultResponseHeaders);
+        using var writer = new HttpResponseWriter(_socket, _serverOptions.DefaultResponseHeaders, _stoppingToken);
         using var receiver = new SocketReceiver();
         using var readTimeoutCts = _serverOptions.ReadTimeout is not null || _serverOptions.RequestHeadersTimeout is not null
             ? new CancellationTokenSource()
@@ -85,6 +97,30 @@ internal sealed class Connection
         // Closing the socket aborts any pending SocketAsyncEventArgs operation,
         // which causes ReceiveAsync to throw SocketException — caught below.
         await using var reg = _cancellationToken.Register(static s => ((Socket)s!).Close(), _socket);
+
+        // Graceful shutdown: close now unless a handler is running; ProcessAsync exits after that response.
+        await using var stoppingReg = _stoppingToken.Register(static s =>
+        {
+            var connection = (Connection)s!;
+            if (Volatile.Read(ref connection._inHandler) != 0)
+            {
+                return;
+            }
+
+            // Shutdown (FIN) rather than Close: closing a socket with a pending receive is an abortive
+            // close (RST) on Unix. Shutdown wakes the pending receive with 0 bytes, so the loop exits
+            // through its normal path and the finally block closes the socket.
+            try
+            {
+                connection._socket.Shutdown(SocketShutdown.Both);
+            }
+            catch (SocketException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }, this);
         var readTimeoutReg = readTimeoutCts?.Token.Register(static s => ((Socket)s!).Close(), _socket);
         
         try
@@ -160,7 +196,7 @@ internal sealed class Connection
 
                     var keepAlive = request.IsKeepAlive;
                     writer.SetRequestKeepAlive(keepAlive);
-                    writer.SetSuppressResponseBody(request.Method == HttpMethod.Head);
+                    writer.SetSuppressResponseBody(request.Method == RequestMethod.Head);
                     
                     if (!request.IsRequestBodySizeWithinLimit(_serverOptions.MaxRequestBodySize))
                     {
@@ -188,6 +224,14 @@ internal sealed class Connection
                             return;
                     }
                     
+                    // Enter the handler phase, then re-check: if shutdown started in between, its callback may
+                    // have seen _inHandler == 0 and closed the socket, so do not dispatch.
+                    Volatile.Write(ref _inHandler, 1);
+                    if (_stoppingToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
                     try
                     {
                         await _handler(request, writer, _cancellationToken);
@@ -233,7 +277,8 @@ internal sealed class Connection
                         await writer.FinishChunkedResponseAsync(cancellationToken: _cancellationToken);
                     }
 
-                    if (!keepAlive || writer.ShouldCloseConnection)
+                    Volatile.Write(ref _inHandler, 0);
+                    if (!keepAlive || writer.ShouldCloseConnection || _stoppingToken.IsCancellationRequested)
                     {
                         return;
                     }

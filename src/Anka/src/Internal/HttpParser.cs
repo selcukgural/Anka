@@ -246,7 +246,7 @@ internal static class HttpParser
         {
             return HttpParseResult.Invalid;
         }
-        else if ((req.Method == HttpMethod.Post || req.Method == HttpMethod.Put || req.Method == HttpMethod.Patch) && !req.HasContentLength)
+        else if ((req.Method == RequestMethod.Post || req.Method == RequestMethod.Put || req.Method == RequestMethod.Patch) && !req.HasContentLength)
         {
             // RFC 7231 §6.5.10: 411 Length Required.
             // PATCH (RFC 5789) also requires a body.
@@ -418,7 +418,7 @@ internal static class HttpParser
                 return HttpParseResult.RequestTargetTooLong;
             }
 
-            if (req.Method == HttpMethod.Unknown || !IsValidRequestTarget(rawPath))
+            if (req.Method == RequestMethod.Unknown || !IsValidRequestTarget(rawPath))
             {
                 return HttpParseResult.Invalid;
             }
@@ -652,7 +652,7 @@ internal static class HttpParser
     /// </returns>
     private static bool TryParseRequestTarget(
         ReadOnlySpan<byte> rawTarget,
-        HttpMethod method,
+        RequestMethod method,
         out RequestTargetForm form,
         out AbsoluteFormScheme scheme,
         out ReadOnlySpan<byte> authorityPart,
@@ -667,7 +667,7 @@ internal static class HttpParser
 
         if (rawTarget.SequenceEqual("*"u8))
         {
-            if (method != HttpMethod.Options)
+            if (method != RequestMethod.Options)
             {
                 return false;
             }
@@ -678,7 +678,7 @@ internal static class HttpParser
             return true;
         }
 
-        if (method == HttpMethod.Connect)
+        if (method == RequestMethod.Connect)
         {
             if (!TryParseAuthority(rawTarget, requirePort: true, out _))
             {
@@ -1245,6 +1245,46 @@ internal static class HttpParser
         }
         
         return start == -1 || end == -1 || start <= end;
+    }
+
+    /// <summary>
+    /// Resolves a single-range <c>Range</c> header value against a representation of
+    /// <paramref name="length"/> bytes: open-ended ranges run to the end, suffix ranges select the last
+    /// N bytes, and an end past the representation is clamped.
+    /// </summary>
+    /// <returns>
+    /// <c>false</c> when the value is malformed, uses several ranges, or cannot be satisfied (start at or past
+    /// the end, empty representation, zero-length suffix).
+    /// </returns>
+    internal static bool TryResolveRange(ReadOnlySpan<byte> value, long length, out long start, out long end)
+    {
+        start = 0;
+        end = 0;
+        if (length <= 0 || !TryParseRange(value, out var first, out var last))
+        {
+            return false;
+        }
+
+        if (first == -1)
+        {
+            if (last == 0)
+            {
+                return false;
+            }
+
+            start = Math.Max(0, length - last);
+            end = length - 1;
+            return true;
+        }
+
+        if (first >= length)
+        {
+            return false;
+        }
+
+        start = first;
+        end = last == -1 ? length - 1 : Math.Min(last, length - 1);
+        return true;
     }
 
     /// <summary>

@@ -43,9 +43,14 @@ public sealed class Server
     private readonly ServerOptions _options;
 
     /// <summary>
-    /// Number of open connections, tracked only when <see cref="ServerOptions.MaxConcurrentConnections"/> is set.
+    /// Number of connections currently being served.
     /// </summary>
     private int _activeConnections;
+
+    /// <summary>
+    /// Completed when the last connection ends after shutdown has started.
+    /// </summary>
+    private TaskCompletionSource? _drained;
 
     /// <summary>
     /// Raised once the listening socket has been bound and started accepting connections.
@@ -65,7 +70,7 @@ public sealed class Server
 
         if (!IPAddress.TryParse(host, out var ip))
         {
-            throw new AnkaArgumentException("Invalid IP address.", nameof(host));
+            throw new AnkaArgumentException("Invalid IP address. Use an IPv4 or IPv6 literal such as \"0.0.0.0\" or \"::\".", nameof(host));
         }
 
         _handler = handler;
@@ -74,13 +79,14 @@ public sealed class Server
     }
 
     /// <summary>
-    /// Starts the server asynchronously and begins listening for incoming connections on the configured endpoint.
+    /// Starts the server and serves connections until <paramref name="cancellationToken"/> is cancelled.
     /// </summary>
     /// <param name="cancellationToken">
-    /// A token that can be used to cancel the server's operation. Listening will terminate when the cancellation is requested.
+    /// Cancelling it starts a graceful shutdown: the listener closes, idle connections are closed, and requests
+    /// already in the handler get up to <see cref="ServerOptions.ShutdownTimeout"/> to finish.
     /// </param>
     /// <returns>
-    /// A <see cref="Task"/> representing the asynchronous operation. The task completes when the server is shut down.
+    /// A <see cref="Task"/> that completes when the listener is closed and every connection has ended.
     /// </returns>
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -96,15 +102,23 @@ public sealed class Server
             ThreadPool.SetMinThreads(desiredMin, Math.Max(desiredMin, currentMinIo));
         }
 
-        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        using var socket = new Socket(_endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+
+        // "::" listens on IPv6 and, with dual mode, on IPv4 as well.
+        if (_endPoint.AddressFamily == AddressFamily.InterNetworkV6 && _endPoint.Address.Equals(IPAddress.IPv6Any))
+        {
+            socket.DualMode = true;
+        }
 
         socket.NoDelay = true;
         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         socket.Bind(_endPoint);
         socket.Listen(_options.Backlog);
 
-        Console.WriteLine($"Listening on {_endPoint}");
-        ListeningStarted?.Invoke(_endPoint);
+        // Cancelled when the shutdown timeout expires: aborts handlers and closes the remaining connections.
+        using var abortCts = new CancellationTokenSource();
+
+        ListeningStarted?.Invoke((IPEndPoint)socket.LocalEndPoint!);
 
         // Run multiple accept loops in parallel to avoid serialization under burst traffic.
         var acceptorCount = _options.AcceptorCount ?? Math.Max(Environment.ProcessorCount / 2, 2);
@@ -112,10 +126,34 @@ public sealed class Server
 
         for (var i = 0; i < acceptorCount; i++)
         {
-            acceptors[i] = AcceptLoopAsync(socket, cancellationToken);
+            acceptors[i] = AcceptLoopAsync(socket, cancellationToken, abortCts.Token);
         }
 
         await Task.WhenAll(acceptors);
+
+        await DrainAsync(abortCts);
+    }
+
+    /// <summary>
+    /// Waits for connections that are still running a handler, up to <see cref="ServerOptions.ShutdownTimeout"/>,
+    /// then aborts whatever is left.
+    /// </summary>
+    private async Task DrainAsync(CancellationTokenSource abortCts)
+    {
+        var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Volatile.Write(ref _drained, drained);
+        if (Volatile.Read(ref _activeConnections) == 0)
+        {
+            drained.TrySetResult();
+        }
+
+        if (_options.ShutdownTimeout > TimeSpan.Zero)
+        {
+            await Task.WhenAny(drained.Task, Task.Delay(_options.ShutdownTimeout));
+        }
+
+        await abortCts.CancelAsync();
+        await drained.Task;
     }
 
     /// <summary>
@@ -123,31 +161,27 @@ public sealed class Server
     /// and starts a connection-handling task for each client.
     /// </summary>
     /// <param name="listener">The socket that is listening for incoming connections.</param>
-    /// <param name="cancellationToken">A cancellation token that can be used to stop the accept loop.</param>
+    /// <param name="stoppingToken">Stops accepting and starts the graceful shutdown of open connections.</param>
+    /// <param name="abortToken">Aborts handlers and closes connections once the shutdown timeout expires.</param>
     /// <returns>A task representing the asynchronous operation of accepting connections.</returns>
-    private async Task AcceptLoopAsync(Socket listener, CancellationToken cancellationToken)
+    private async Task AcceptLoopAsync(Socket listener, CancellationToken stoppingToken, CancellationToken abortToken)
     {
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested)
             {
-                var client = await listener.AcceptAsync(cancellationToken);
+                var client = await listener.AcceptAsync(stoppingToken);
 
-                if (_options.MaxConcurrentConnections is not { } maxConnections)
+                var active = Interlocked.Increment(ref _activeConnections);
+                if (_options.MaxConcurrentConnections is { } maxConnections && active > maxConnections)
                 {
-                    // Fire & forget — accept loop never blocks on a connection
-                    _ = Connection.RunAsync(client, _handler, _options, cancellationToken);
-                    continue;
-                }
-
-                if (Interlocked.Increment(ref _activeConnections) > maxConnections)
-                {
-                    Interlocked.Decrement(ref _activeConnections);
                     client.Dispose();
+                    ConnectionEnded();
                     continue;
                 }
 
-                _ = RunCountedConnectionAsync(client, cancellationToken);
+                // Fire & forget — accept loop never blocks on a connection
+                _ = RunConnectionAsync(client, stoppingToken, abortToken);
             }
         }
         catch (OperationCanceledException)
@@ -157,18 +191,25 @@ public sealed class Server
     }
 
     /// <summary>
-    /// Runs a connection that counts toward <see cref="ServerOptions.MaxConcurrentConnections"/>
-    /// and releases its slot when the connection ends.
+    /// Runs one connection and releases its slot in the active-connection count when it ends.
     /// </summary>
-    private async Task RunCountedConnectionAsync(Socket client, CancellationToken cancellationToken)
+    private async Task RunConnectionAsync(Socket client, CancellationToken stoppingToken, CancellationToken abortToken)
     {
         try
         {
-            await Connection.RunAsync(client, _handler, _options, cancellationToken);
+            await Connection.RunAsync(client, _handler, _options, stoppingToken, abortToken);
         }
         finally
         {
-            Interlocked.Decrement(ref _activeConnections);
+            ConnectionEnded();
+        }
+    }
+
+    private void ConnectionEnded()
+    {
+        if (Interlocked.Decrement(ref _activeConnections) == 0)
+        {
+            Volatile.Read(ref _drained)?.TrySetResult();
         }
     }
 }

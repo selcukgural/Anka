@@ -1,1176 +1,786 @@
 # Anka
 
-[![NuGet](https://img.shields.io/nuget/v/Anka.svg)](https://www.nuget.org/packages/Anka)
+[![NuGet](https://img.shields.io/nuget/vpre/Anka.svg)](https://www.nuget.org/packages/Anka)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/selcukgural/Anka/actions/workflows/ci.yml/badge.svg)](https://github.com/selcukgural/Anka/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/selcukgural/Anka/blob/main/LICENSE)
 [![.NET 8+](https://img.shields.io/badge/.NET-8.0%2B-512BD4)](https://dotnet.microsoft.com)
-[![Cold Start: 2.3ms](https://img.shields.io/badge/cold--start%20ready-2.3%20ms-brightgreen)](#cold-start--measured-results)
-[![Startup Alloc: 124.5 KB](https://img.shields.io/badge/startup%20alloc-124.5%20KB-brightgreen)](#cold-start--measured-results)
-[![Status: Beta](https://img.shields.io/badge/status-beta-orange)](#)
 
-> ⚠️ **BETA — Research & Experimentation Only**
->
-> Anka is in **early beta**. It is intended **solely for testing, research, and experimentation**.
-> **Do not use Anka in production environments.** The API is unstable, security hardening is incomplete,
-> and there are no guarantees around correctness, stability, or backwards compatibility.
-> Production use is strongly discouraged.
+A minimal HTTP/1.1 server library for .NET 8+, built for **Native AOT**: the process is ready to accept
+connections about **2 ms** after launch, uses about **15 MB** of memory, and allocates nothing per request on
+keep-alive connections.
 
-Minimal HTTP/1.x server library for .NET 8+, built for **Native AOT** with a focus on minimising cold-start time and keeping steady-state allocation at zero.
+> ⚠️ **Beta: for research and experimentation only.** The API can still change between versions and the server has
+> not been hardened for production traffic. Do not expose it directly to the internet.
 
----
+## Contents
 
-## Table of Contents
+- [Is Anka a fit?](#is-anka-a-fit)
+- [Getting started](#getting-started)
+- [Core concepts](#core-concepts)
+- [Recipes](#recipes)
+- [Configuration](#configuration)
+- [What Anka handles for you](#what-anka-handles-for-you)
+- [Deployment](#deployment)
+- [Writing fast handlers](#writing-fast-handlers)
+- [Troubleshooting](#troubleshooting)
+- [API reference](#api-reference)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
 
-1. [Installation](#installation)
-2. [Why Anka](#why-anka)
-3. [Quick Start](#quick-start)
-4. [Examples](#examples)
-5. [RFC Compliance](#rfc-compliance)
-6. [Architecture Overview](#architecture-overview)
-7. [Class Reference — Public API](#class-reference--public-api)
-8. [Class Reference — Internal](#class-reference--internal)
-9. [Memory Model](#memory-model)
-10. [Performance Profile](#performance-profile)
-11. [Project Structure](#project-structure)
-12. [Test Coverage](#test-coverage)
+## Is Anka a fit?
 
----
+Anka is one `Server` class and one handler delegate. There is no middleware, routing, dependency injection or
+configuration system. You get the parsed request and a response writer, and everything else is plain C#.
 
-## Installation
+| Good fit | Not a fit |
+|---|---|
+| Serverless functions and short-lived containers where cold start matters | Product APIs with many endpoints, auth, versioning, OpenAPI |
+| Sidecars, health/metrics endpoints, webhooks, internal callbacks | Apps that depend on the ASP.NET Core middleware ecosystem |
+| Edge and memory-constrained deployments | HTTP/2, HTTP/3, WebSockets, built-in TLS |
+| Learning or measuring HTTP/1.1 without framework noise | Production traffic today (beta) |
 
-```shell
-dotnet add package Anka
+Measured against Kestrel on the same machine (Apple M3 Max, Native AOT vs JIT):
+
+| | Anka | Kestrel |
+|---|---:|---:|
+| Time from process start to accepting connections | **2.3 ms** | 140 ms |
+| Memory (RSS) after the first response | **15 MB** | 98 MB |
+| Allocation during startup | **124.5 KB** | 2.5 MB |
+| Plain-text throughput (wrk, 400 connections) | 133k req/s | 142k req/s |
+
+Throughput is on par; the gains are startup time and footprint. Full numbers and methodology:
+[docs/performance.md](https://github.com/selcukgural/Anka/blob/main/docs/performance.md).
+
+## Getting started
+
+### 1. Create a project
+
+```bash
+dotnet new console -n HelloAnka
+cd HelloAnka
+dotnet add package Anka --prerelease
 ```
 
-[![NuGet](https://img.shields.io/nuget/v/Anka.svg)](https://www.nuget.org/packages/Anka)
-[![NuGet Downloads](https://img.shields.io/nuget/dt/Anka.svg)](https://www.nuget.org/packages/Anka)
+`--prerelease` is required while Anka is in beta. Add Native AOT to `HelloAnka.csproj`:
 
-Requires .NET 8 SDK or later.
+```xml
+<PropertyGroup>
+  <OutputType>Exe</OutputType>
+  <TargetFramework>net8.0</TargetFramework>
+  <ImplicitUsings>enable</ImplicitUsings>
+  <Nullable>enable</Nullable>
+  <PublishAot>true</PublishAot>
+  <InvariantGlobalization>true</InvariantGlobalization>
+</PropertyGroup>
+```
 
-> **Note:** Anka is currently in beta. Use only for research and experimentation — not for production workloads.
+### 2. Write the server
 
----
-
-## Why Anka
-
-Modern .NET applications typically pay 100–300 ms of JIT warmup on every cold start. In serverless and container environments — where instances are spun up on demand — every millisecond of startup latency translates directly into cost and tail latency for the first caller.
-
-Anka is designed around one idea:
-
-> **Publish as a Native AOT binary. Accept the first HTTP request in under 25 ms from process launch.**
-
-### Cold Start — Measured Results
-
-> **Environment:** Apple M3 Max · macOS · .NET 8.0.25 · Native AOT (osx-arm64)  
-> "Time to ready" = time between process start and the socket becoming ready to accept connections.  
-> "First response" = round-trip time of the very first HTTP request, measured from outside the process.
-
-| | Anka (Native AOT) | Kestrel (JIT) | Improvement |
-|---|---:|---:|---:|
-| Time to listen | 411 ms ¹ | 203 ms | — |
-| **⚡ Time to ready** | **2.3 ms** | **140 ms** | **61× faster** |
-| First response | 20 ms | 26 ms | 1.3× faster |
-| Startup allocation | **124.5 KB** | 2.5 MB | **20× less** |
-| RSS at steady state | **~15 MB** | ~98 MB | **6.5× less** |
-
-¹ Anka creates a fresh `Socket`; Kestrel reuses existing OS handles, so it binds the port faster. The JIT warmup cost more than compensates: Kestrel needs **140 ms** after binding before it can serve — Anka needs **2.3 ms**.
-
-**What "2.3 ms ready" means in practice:**  
-From the moment the OS hands control to the process, Anka allocates a socket, binds, and starts accepting connections in **2.3 milliseconds**. A Kestrel process in the same environment takes ~140 ms to reach the same point due to JIT compilation. In a serverless or autoscaling context this difference is the gap between a cold start that a user notices and one that goes undetected.
-
-To achieve this, Anka makes deliberate trade-offs:
-
-- **No middleware pipeline** — a single `RequestHandler` delegate handles every request
-- **No built-in routing** — path dispatch is left to user code (a `switch` expression is enough)
-- **HTTP/1.x only** — no HTTP/2, no TLS, no WebSocket
-- **Raw sockets** — `SocketAsyncEventArgs` + pooled 64 KB sliding receive window, no `System.IO.Pipelines`
-
-If you need the full ASP.NET Core feature set, use Kestrel. If you need a tiny, fast, zero-allocation HTTP listener with near-instant cold starts for a Native AOT binary — Anka is for you.
-
----
-
-## Quick Start
+`Program.cs`:
 
 ```csharp
+using System.Runtime.InteropServices;
 using Anka;
 
-var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+byte[] hello     = "Hello from Anka!"u8.ToArray();
+byte[] notFound  = "Not Found"u8.ToArray();
+byte[] textPlain = "text/plain; charset=utf-8"u8.ToArray();
+
+using var cts = new CancellationTokenSource();
+// Ctrl+C locally, SIGTERM from `docker stop` or Kubernetes.
+using var sigint  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  ctx => { ctx.Cancel = true; cts.Cancel(); });
+using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; cts.Cancel(); });
 
 var server = new Server(
-    handler: async (req, res, ct) =>
+    handler: (req, res, ct) =>
     {
-        var body = "Hello from Anka!"u8.ToArray();
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
-    },
-    port: 8080);
-
-await server.StartAsync(cts.Token);
-```
-
-Graceful shutdown with `Ctrl+C`.
-
-### Quick Start with Options
-
-```csharp
-var options = new ServerOptions
-{
-    MaxRequestBodySize = 1 * 1024 * 1024, // 1 MB
-    MaxRequestTargetSize = 8 * 1024,      // 8 KB
-    MaxRequestHeadersSize = 8 * 1024,     // 8 KB
-    ReadTimeout = TimeSpan.FromSeconds(15),
-    DefaultResponseHeaders =
-    [
-        new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
-        new HttpHeader("x-frame-options"u8.ToArray(), "DENY"u8.ToArray()),
-    ]
-};
-
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        await res.WriteAsync(200, "ok"u8.ToArray(), "text/plain; charset=utf-8"u8, cancellationToken: ct);
-    },
-    port: 8080,
-    options: options);
-
-await server.StartAsync(cts.Token);
-```
-
----
-
-## Examples
-
-### Plain Text Response
-
-```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        var body = "Hello, World!"u8.ToArray();
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
-    },
-    port: 8080);
-
-await server.StartAsync(cts.Token);
-```
-
-### JSON Response
-
-```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        var json = """{"message":"ok","version":"0.0.1"}"""u8.ToArray();
-        await res.WriteAsync(200, json, contentType: "application/json; charset=utf-8"u8, cancellationToken: ct);
-    },
-    port: 8080);
-```
-
-### Reading Path and Query String
-
-```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        // req.Path   → "/search"
-        // req.Query  → "q=anka&limit=10"
-        var path = req.Path.ToString();
-        var query = req.Query.ToString();
-
-        var body = System.Text.Encoding.UTF8.GetBytes($"path={path} query={query}");
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
-    },
-    port: 8080);
-```
-
-### Reading Request Headers
-
-```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        // Header names are normalised to lowercase
-        var ua = req.Headers.TryGetValue("user-agent", out var v) ? v.ToString() : "unknown";
-
-        var body = System.Text.Encoding.UTF8.GetBytes($"User-Agent: {ua}");
-        await res.WriteAsync(200, body, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
-    },
-    port: 8080);
-```
-
-### Reading POST Body
-
-```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        // req.Body contains the full body (read via Content-Length)
-        var text = System.Text.Encoding.UTF8.GetString(req.Body.Span);
-
-        var echo = System.Text.Encoding.UTF8.GetBytes($"echo: {text}");
-        await res.WriteAsync(200, echo, contentType: "text/plain; charset=utf-8"u8, cancellationToken: ct);
-    },
-    port: 8080);
-```
-
-Conflicting duplicate `Content-Length` headers are rejected with `400 Bad Request`. Malformed `Content-Length` framing is also rejected with `400 Bad Request`.
-
-Responses to `HEAD` requests suppress payload bytes on the wire while preserving representation headers. `1xx`, `204`, and `304` responses omit payload bytes and body-describing headers such as `Content-Length` and `Content-Type`.
-
-`HTTP/1.1` requests must include a valid `Host` header. Missing, duplicate, invalid, or absolute-form-mismatched `Host` values are rejected with `400 Bad Request`.
-
-Malformed HTTP version tokens are rejected with `400 Bad Request`. Well-formed but unsupported versions such as `HTTP/2.0` are rejected with `505 HTTP Version Not Supported`.
-
-Repeated headers can be enumerated via `HttpHeaders.TryGetAllValues(...)`. `Expect: 100-continue` is handled automatically, and chunked request bodies are decoded into `req.Body` before the handler runs.
-
-### Simple Path-Based Routing
-
-```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        var path = req.Path.ToString();
-        var method = req.Method.ToString();
-
-        (int status, byte[] body, ReadOnlyMemory<byte> ct2) = (path, method) switch
+        if (req.Method is RequestMethod.Get or RequestMethod.Head && req.PathEquals("/"u8))
         {
-            ("/", "GET")     => (200, "Welcome!"u8.ToArray(),           (ReadOnlyMemory<byte>)"text/plain; charset=utf-8"u8.ToArray()),
-            ("/ping", "GET") => (200, """{"pong":true}"""u8.ToArray(),  (ReadOnlyMemory<byte>)"application/json; charset=utf-8"u8.ToArray()),
-            _                => (404, "Not Found"u8.ToArray(),          (ReadOnlyMemory<byte>)"text/plain; charset=utf-8"u8.ToArray())
-        };
+            return res.WriteAsync(200, hello, textPlain, req.IsKeepAlive, ct);
+        }
 
-        await res.WriteAsync(status, body, contentType: ct2, cancellationToken: ct);
+        return res.WriteAsync(404, notFound, textPlain, req.IsKeepAlive, ct);
     },
     port: 8080);
+
+await server.StartAsync(cts.Token); // returns after cts is cancelled and open requests have finished
 ```
 
-### Adding Per-Request Response Headers (Fluent API)
+### 3. Run it
+
+```bash
+dotnet run
+curl http://127.0.0.1:8080/        # Hello from Anka!
+```
+
+### 4. Publish as a native binary
+
+```bash
+dotnet publish -c Release -r osx-arm64 -o out   # or linux-x64, linux-arm64, win-x64 ...
+./out/HelloAnka
+```
+
+The output is a single self-contained executable (about 2.5 MB for this example) that needs no .NET runtime
+on the target machine. Native AOT needs a platform linker:
+[prerequisites](https://learn.microsoft.com/dotnet/core/deploying/native-aot/#prerequisites) (Xcode command-line
+tools on macOS, `clang` and `zlib1g-dev` on Debian/Ubuntu, the C++ workload of Visual Studio on Windows).
+
+Anka itself produces no trim or AOT warnings. If `dotnet publish` prints `IL2xxx` or `IL3xxx` warnings, they come
+from your code or another dependency; take them seriously, because code that warns can fail at runtime only in
+the published binary.
+
+## Core concepts
+
+### One handler
 
 ```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        var body = """{"status":"ok"}"""u8.ToArray();
-
-        // Fluent AddHeader chains extra headers onto the response.
-        // For zero-allocation hot paths, pre-build a static readonly HttpHeader[] instead.
-        await res
-            .AddHeader(HttpHeaderNames.AccessControlAllowOrigin, "*"u8)
-            .AddHeader(HttpHeaderNames.AccessControlAllowMethods, "GET, POST"u8)
-            .WriteAsync(200, body, "application/json; charset=utf-8"u8, keepAlive: true, ct);
-    },
-    port: 8080);
+public delegate ValueTask RequestHandler(HttpRequest request, HttpResponseWriter response, CancellationToken cancellationToken);
 ```
 
-### Redirect
+Every request on every connection calls the same handler. Dispatch is ordinary code: `if`, `switch`, a
+dictionary, or a [source generator](https://github.com/selcukgural/anka-source-generated-routing).
 
-```csharp
-var server = new Server(
-    handler: async (req, res, ct) =>
-    {
-        await res
-            .AddHeader(HttpHeaderNames.Location, "/new-path"u8)
-            .WriteAsync(301, default, default, keepAlive: false, ct);
-    },
-    port: 8080);
-```
+### Bytes, not strings
 
-### Default Response Headers (Global Security Headers)
+The request exposes raw bytes (`PathBytes`, `QueryBytes`, header values as `ReadOnlySpan<byte>`) and the
+response takes bytes (`ReadOnlyMemory<byte>`). This is what keeps the hot path allocation-free.
 
-```csharp
-var options = new ServerOptions
-{
-    DefaultResponseHeaders =
-    [
-        new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
-        new HttpHeader("x-frame-options"u8.ToArray(),        "DENY"u8.ToArray()),
-        new HttpHeader("x-xss-protection"u8.ToArray(),       "1; mode=block"u8.ToArray()),
-    ]
-};
+- Create constant bodies and content types **once**, as `static readonly byte[]` fields or locals captured by the
+  handler, with UTF-8 literals: `"text/plain"u8.ToArray()`.
+- A bare `"..."u8` literal is a `ReadOnlySpan<byte>` and cannot be passed where `ReadOnlyMemory<byte>` is
+  expected, so `res.WriteAsync(200, body, "text/plain"u8, ...)` does not compile. Store the bytes first.
+- Convenience properties that allocate exist when you need them: `req.Path`, `req.QueryString`.
 
-var server = new Server(handler, port: 8080, options: options);
-```
+### Exactly one response per request
 
-### Enforcing a Request Body Size Limit
+Call **one** of `WriteAsync`, `WritePartialAsync`, `StartChunkedResponseAsync` or `GetStream()` per request.
+Starting a second response throws `InvalidOperationException`; check `res.HasStarted` if a code path may already
+have written. When the handler returns:
 
-```csharp
-// Requests with a body exceeding 512 KB automatically receive 413 Payload Too Large.
-var options = new ServerOptions
-{
-    MaxRequestBodySize = 512 * 1024,
-    MaxRequestTargetSize = 8 * 1024,
-    MaxRequestHeadersSize = 8 * 1024
-};
-
-var server = new Server(handler, port: 8080, options: options);
-```
-
-### Enforcing a Request Header Size Limit
-
-```csharp
-// Requests whose header fields exceed 8 KB, or exceed the built-in
-// header-count cap, automatically receive 431 Request Header Fields Too Large.
-var options = new ServerOptions
-{
-    MaxRequestHeadersSize = 8 * 1024
-};
-
-var server = new Server(handler, port: 8080, options: options);
-```
-
----
-
-## RFC Compliance
-
-Anka targets HTTP/1.x and implements the following behaviour from the core HTTP RFCs.
-
-### Supported (RFC 7230 — Message Syntax & Routing)
-
-| Feature | Behaviour | Reference |
-|---|---|---|
-| HTTP/1.0 and HTTP/1.1 | Both versions parsed and handled; dynamic response versioning | §2.6 |
-| Request-target forms | Origin (`/path`), absolute (`http://host/path`), authority (`host:port` for CONNECT), asterisk (`*` for OPTIONS) | §5.3 |
-| Host header validation | Required for HTTP/1.1; missing / duplicate / mismatched Host → `400` | §5.4 |
-| Content-Length | Parsed and validated; conflicting duplicates → `400`; malformed values → `400`; missing for POST/PUT/PATCH → `411` | §3.3.2 |
-| Transfer-Encoding: chunked | Chunk-size parsing (hex), chunk data + CRLF validation, trailer headers, body reassembly into `req.Body` | §4.1 |
-| Chunked response encoding | Supported via `response.GetStream()` — returns a `Stream` that sends `Transfer-Encoding: chunked`; headers + terminating chunk managed automatically. HTTP/1.0 clients get a close-delimited body instead (chunked does not exist in HTTP/1.0) | §4.1, §7 |
-| Response trailer headers | Supported via `stream.AddTrailer(header)` when using `response.GetStream()` | §4.1.2 |
-| Expect: 100-continue | Automatic `100 Continue` interim response before body read | §5.1.1 |
-| Connection management | HTTP/1.1 keep-alive by default; HTTP/1.0 close by default; `Connection` parsed as a case-insensitive token list (`Close`, `close, TE`, repeated headers). A response can only narrow keep-alive: `keepAlive: false` from the handler closes the connection after the response | §6.1, §6.3 |
-| Header normalisation | Names lowercased on ingestion; repeated headers enumerable via `TryGetAllValues(...)` | §3.2.2 |
-| Message body suppression | HEAD responses and `304 Not Modified` suppress payload bytes while preserving representation headers; `1xx` / `204` omit body-describing headers | §3.3 |
-
-### Supported (RFC 7231 — Semantics & Content)
-
-| Feature | Behaviour | Reference |
-|---|---|---|
-| Methods | GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH | §4 |
-| Status codes | Full reason-phrase mapping for common codes (200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 405, 411, 413, 414, 417, 431, 500, 501, 503, 505) | §6 |
-
-### Supported (RFC 3986 — URI Syntax)
-
-| Feature | Behaviour | Reference |
-|---|---|---|
-| Absolute-form parsing | Scheme detection (http/https), authority extraction, path + query split | §3 |
-| Authority validation | IPv6 literals (`[::1]`), IPv4 addresses, domain reg-names, port range 0–65535 | §3.2 |
-| Host ↔ absolute-form consistency | Host header must match the authority in an absolute-form request-target | §5.4 (7230) |
-
-### Supported (RFC 9110 / RFC 9111 — Range Requests & Caching)
-
-| Feature | Behaviour | Reference |
-|---|---|---|
-| Range requests | `HttpResponseWriter.WritePartialAsync(rangeStart, rangeEnd, totalLength, ...)` sends `206 Partial Content` with `Content-Range` and `Accept-Ranges` headers | §14.2, §14.4 |
-| Conditional caching (`If-None-Match`) | Request's `If-None-Match` is compared against the response's `ETag` header (exact match only, not the full list-of-ETags grammar); on match, status is downgraded to `304 Not Modified` and the body is suppressed automatically | RFC 9111 §4.3.2 |
-
-Not yet implemented: `If-Range` conditional revalidation (the header name constant exists but no logic reads it), and `Range` is not automatically parsed/validated from the request — the caller computes `rangeStart`/`rangeEnd` and calls `WritePartialAsync` itself.
-
-### Supported (Multipart)
-
-| Feature | Behaviour | Reference |
-|---|---|---|
-| `multipart/form-data` parsing | `MultipartParser` (public `ref struct` in `Anka.Internal`) splits a body by boundary into parts via `TryReadNextPart`, and reads `Content-Disposition` `name`/`filename` per part — zero-allocation | RFC 7578 |
-
-### Error Responses
-
-Anka returns the following automatic error responses before the user handler runs:
-
-| Status | Condition | Behaviour |
-|---|---|---|
-| `100 Continue` | `Expect: 100-continue` header present | Sent before reading the request body |
-| `400 Bad Request` | Malformed request line, unrecognised method, control characters in the request-target, invalid headers (e.g. malformed name, obs-fold, CR/LF/NUL or other control bytes in a value), a `Content-Length` that is not plain digits (`+5`, `5,5`, `0x5`) or conflicts with another, missing/invalid `Host`, malformed HTTP version token | Connection closed |
-| `411 Length Required` | POST, PUT, or PATCH request missing `Content-Length` or `Transfer-Encoding` | Connection closed |
-| `413 Payload Too Large` | Body exceeds `ServerOptions.MaxRequestBodySize` | Connection closed |
-| `414 URI Too Long` | Request-target exceeds `ServerOptions.MaxRequestTargetSize` | Connection closed |
-| `431 Request Header Fields Too Large` | Headers exceed `ServerOptions.MaxRequestHeadersSize` (default 8 KB) or header count > 64 | Connection closed |
-| `505 HTTP Version Not Supported` | Well-formed but unsupported version (e.g. `HTTP/2.0`) | Connection closed |
-
-### Configurable Limits
-
-| Limit | Default | ServerOptions Property | Over-limit Response |
-|---|---|---|---|
-| Request body size | 30,000,000 bytes | `MaxRequestBodySize` (`null` disables) | `413` |
-| Request-target size | Unlimited | `MaxRequestTargetSize` | `414` |
-| Header aggregate size | 8 KB | `MaxRequestHeadersSize` | `431` |
-| Header count | 64 | — (hard limit) | `431` |
-| Idle read timeout (also keep-alive idle) | 30 s | `ReadTimeout` (`null` disables) | Connection closed silently |
-| Total time to receive the header block | 30 s | `RequestHeadersTimeout` (`null` disables) | Connection closed silently |
-| Concurrent connections | Unlimited | `MaxConcurrentConnections` | New connection closed without a response |
-
-### Roadmap & Upcoming Features
-
-Anka targets ~90% RFC 9110/9112 compliance for the core protocol.
-
-- [x] **Range Requests (RFC 9110 §14):** `Range`-based partial content delivery via `WritePartialAsync` (`206` + `Content-Range`). `If-Range` is not yet handled.
-- [x] **Caching Validation (RFC 9111):** Automatic `If-None-Match` / `ETag` comparison, downgrading to `304 Not Modified`.
-- [x] **Multipart Parser:** Zero-allocation `multipart/form-data` parsing via `MultipartParser`.
-
-No further items are currently tracked on the roadmap.
-
-### Not Supported / Out of Scope
-
-| Feature | Status |
+| Handler outcome | What Anka sends |
 |---|---|
-| HTTP/2, HTTP/3 | Not planned — HTTP/1.x only |
-| TLS / HTTPS | Not built-in — terminate TLS at a reverse proxy |
-| WebSocket upgrade | Not implemented (requires `Upgrade` header support) |
-| Content-Encoding (gzip, deflate, br) | Not built-in — decompress in user code |
-| Content Negotiation | Partial — headers available, but no automated selection engine |
-| HTTP/0.9 | Rejected |
+| Wrote a response | That response |
+| Wrote nothing | `200 OK` with an empty body |
+| Started a chunked response and did not finish it | The terminating chunk |
+| Threw before writing | `500 Internal Server Error`, `Connection: close`; the exception type and message go to stderr |
+| Threw after writing started | Nothing more; the connection is closed |
 
-```
-                        ┌──────────────────────────────────────────┐
-                        │               Server (public)            │
-                        │  • Validates port & IP                   │
-                        │  • Socket.Listen(backlog: 512)           │
-                        │  • Accept loop → Connection.RunAsync()   │
-                        └────────────────┬─────────────────────────┘
-                                         │ fire & forget Task per client
-                        ┌────────────────▼─────────────────────────┐
-                        │            Connection (internal)         │
-                        │                                          │
-                        │  SocketReceiver.ReceiveAsync()           │
-                        │  → pooled 64 KB receive buffer           │
-                        │  → sliding parse window                  │
-                        │  → HttpParser.TryParse()                 │
-                        │  → RequestHandler()                      │
-                        │  → HttpResponseWriter.WriteAsync()       │
-                        │  → Socket.SendAsync()                    │
-                        └──────────────────────────────────────────┘
-```
+### Keep-alive
 
-**Data Flow:**
+Pass `req.IsKeepAlive` as the `keepAlive` argument. HTTP/1.1 connections stay open unless the client sends
+`Connection: close`; HTTP/1.0 connections close unless the client sends `Connection: keep-alive`. Passing `false`
+closes the connection after the response; passing `true` cannot override a client that asked to close.
 
-```
-TCP bytes → SocketReceiver.ReceiveAsync()
-         → pooled receive buffer + sliding window
-         → HttpParser.TryParse()              (request line + headers)
-         → 100 Continue (if Expect header)
-         → Content-Length body read  OR  ChunkedBodyParser (Transfer-Encoding: chunked)
-         → HttpRequest (rented once per connection, reused per request)
-         → handler(request, response)
-         → HttpResponseWriter.WriteAsync()    (body suppressed for HEAD / 304)
-         → Socket.SendAsync()
-```
+### The request object is reused
 
----
+`HttpRequest`, its headers and `req.Body` point into buffers that are recycled for the next request on the same
+connection. Use them freely inside the handler (including across `await`), but **copy anything you need after
+the handler returns**, e.g. before handing work to a background task: `req.Body.ToArray()`, `req.Path`.
 
-## Class Reference — Public API
+### Cancellation
 
-### `Server`
+The `CancellationToken` passed to the handler is cancelled when a shutdown runs out of time (see
+[Shutdown behaviour](#shutdown-behaviour)), not when a client disconnects. Pass it to your own I/O (database
+calls, `HttpClient`) so a stuck call cannot hold up the process.
 
-```
-Namespace: Anka
-Access:    public sealed
-```
+## Recipes
 
-**Constructor**
+All snippets are taken from a sample that is published with Native AOT and exercised with `curl`. The helpers
+used below (`TextPlain`, `Json`) are:
 
 ```csharp
-Server(RequestHandler handler, int port, string host = "127.0.0.1", ServerOptions? options = null)
+static readonly byte[] TextPlain = "text/plain; charset=utf-8"u8.ToArray();
+static readonly byte[] Json      = "application/json"u8.ToArray();
 ```
 
-| Parameter | Description                                      |
-|-----------|--------------------------------------------------|
-| `handler` | Delegate called for every HTTP request           |
-| `port`    | TCP port number (1–65535)                        |
-| `host`    | IPv4 address to listen on (default: `127.0.0.1`) |
-| `options` | Optional server configuration (see `ServerOptions`). Uses sensible defaults when `null`. |
-
-**Event**
+### Routing
 
 ```csharp
-event Action<IPEndPoint>? ListeningStarted
-```
-
-Raised once the listening socket has been bound. Useful for startup instrumentation and readiness probes.
-
-**Thrown Exceptions:**
-- `AnkaOutOfRangeException` — port is outside the 1–65535 range
-- `AnkaArgumentException` — invalid IP address
-
-**Method**
-
-```csharp
-Task StartAsync(CancellationToken cancellationToken = default)
-```
-
-Starts the server. Does not return until the token is cancelled. Returning = server stopped.
-
----
-
-### `HttpRequest`
-
-```
-Namespace: Anka
-Access:    public sealed
-```
-
-Represents a parsed HTTP request. **Must not be used** after the handler completes — the object is returned to the pool via `Return()`.
-
-| Member        | Type                   | Description                                                   |
-|---------------|------------------------|---------------------------------------------------------------|
-| `Method`      | `HttpMethod`           | GET, POST, ...                                                |
-| `Version`     | `HttpVersion`          | Http10, Http11                                                |
-| `Path`        | `string`               | Lazy-materialized path string (`/api/users`)                  |
-| `PathBytes`   | `ReadOnlySpan<byte>`   | Zero-copy raw path bytes                                      |
-| `QueryString` | `string?`              | Lazy-materialized query (`foo=bar`). `null` if no `?` present |
-| `QueryBytes`  | `ReadOnlySpan<byte>`   | Zero-copy raw query bytes                                     |
-| `Headers`     | `HttpHeaders`          | Header collection (struct, inline)                            |
-| `Body`        | `ReadOnlyMemory<byte>` | Request body. Populated from `Content-Length` or decoded chunked bodies; empty when no body is present. |
-| `IsKeepAlive` | `bool`                 | Is the connection persistent?                                 |
-
-**Note:** `Path` and `QueryString` call `Encoding.ASCII.GetString()` on first access and cache the result. `PathBytes` and `QueryBytes` never allocate.
-
----
-
-### `HttpResponseWriter`
-
-```
-Namespace: Anka
-Access:    public sealed
-```
-
-Writes an HTTP/1.1 response. Zero string allocation via `ArrayPool` + `Utf8Formatter`.
-
-**Methods**
-
-```csharp
-// Simple overload — no extra headers
-ValueTask WriteAsync(
-    int statusCode,
-    ReadOnlyMemory<byte> body           = default,
-    ReadOnlyMemory<byte> contentType    = default,
-    bool keepAlive                      = true,
-    CancellationToken cancellationToken = default)
-
-// Full overload — with per-request extra headers
-ValueTask WriteAsync(
-    int statusCode,
-    ReadOnlyMemory<byte> body,
-    ReadOnlyMemory<byte> contentType,
-    bool keepAlive,
-    ReadOnlySpan<HttpHeader> extraHeaders,
-    CancellationToken cancellationToken = default)
-```
-
-| Parameter      | Description                                                                        |
-|----------------|------------------------------------------------------------------------------------|
-| `statusCode`   | HTTP status code (200, 404, 500, etc.)                                             |
-| `body`         | Response body (optional)                                                           |
-| `contentType`  | Content-Type header value as UTF-8 bytes (e.g., `"application/json"u8`)            |
-| `keepAlive`    | `Connection: keep-alive` or `close`. Can only narrow the request's choice; `false` closes the connection after the response. |
-| `extraHeaders` | Zero-allocation per-request headers. Pre-build a `static readonly HttpHeader[]` for hot paths. |
-
-> **Fluent API:** Use `response.AddHeader(name, value).WriteAsync(...)` to attach extra headers without building an array. See `HttpResponseWriterExtensions`.
-
-```csharp
-// Streaming / chunked response
-Stream GetStream(CancellationToken cancellationToken = default)
-```
-
-Returns an `HttpResponseStream` that writes the response body using `Transfer-Encoding: chunked`. The 200 status line and chunked headers are sent automatically on the first write; the terminating `0\r\n\r\n` chunk is sent when the stream is disposed.
-
-```csharp
-await using var stream = response.GetStream(cancellationToken);
-await stream.WriteAsync(chunk1, cancellationToken);
-await stream.WriteAsync(chunk2, cancellationToken);
-// terminating chunk sent on DisposeAsync
-```
-
-`HttpResponseStream` is connection-scoped and reused across keep-alive requests — `GetStream()` reinitialises it without allocating. HEAD requests are handled correctly: headers are sent but chunk data is suppressed. For HTTP/1.0 clients the body is written without framing and the connection is closed after it; trailers are dropped.
-
-**One response per request.** `WriteAsync`, `WritePartialAsync`, `StartChunkedResponseAsync` and the first write to `GetStream()` each start the response; starting a second one for the same request throws `InvalidOperationException`. Check `response.HasStarted` if a code path may already have written. When the handler returns:
-
-- without having written anything, Anka sends `200 OK` with an empty body;
-- with a chunked response still open (stream not disposed, `FinishChunkedResponseAsync` not called), Anka sends the terminating chunk;
-- by throwing, Anka logs the exception and sends `500` with `Connection: close` if nothing was written yet, otherwise it only closes the connection.
-
-**Supported Status Code Reason Phrases:**
-100 Continue · 200 OK · 201 Created · 204 No Content · 301 Moved Permanently · 302 Found · 304 Not Modified · 400 Bad Request · 401 Unauthorized · 403 Forbidden · 404 Not Found · 405 Method Not Allowed · 413 Payload Too Large · 414 URI Too Long · 431 Request Header Fields Too Large · 500 Internal Server Error · 501 Not Implemented · 503 Service Unavailable · 505 HTTP Version Not Supported · others → "Unknown"
-
----
-
-### `HttpHeaders`
-
-```
-Namespace: Anka
-Access:    public struct
-```
-
-Header collection without heap allocation. 64 header entries are embedded in the struct via `[InlineArray(64)]`.
-
-| Member                                                          | Description                                                       |
-|-----------------------------------------------------------------|-------------------------------------------------------------------|
-| `Count`                                                         | Number of headers added                                           |
-| `TryGetValue(ReadOnlySpan<byte>, out ReadOnlySpan<byte>)`       | Zero-alloc lookup. `lowercaseName` **must already be lowercase**. |
-| `TryGetValue(string, out ReadOnlySpan<byte>)`                   | Lowercase conversion via `stackalloc`. 128-character limit.       |
-| `TryGetAllValues(ReadOnlySpan<byte>, out HeaderValues)`         | Enumerate all values for a repeated header name (zero-alloc).     |
-
-**Important:** Header names are **lowercase-normalised** during `Add()`. Lookup is always done with `SequenceEqual`.  
-`HttpHeaderNames` constants are already lowercase and can be used directly:
-
-```csharp
-if (request.Headers.TryGetValue(HttpHeaderNames.ContentType, out var ct))
+static ValueTask HandleAsync(HttpRequest req, HttpResponseWriter res, CancellationToken ct)
 {
-    // ct = ReadOnlySpan<byte> — zero allocation
+    if (req.Method == RequestMethod.Options)
+        return res.WriteAsync(204, default, default, req.IsKeepAlive, CorsHeaders, ct);
+
+    if (req.Method is RequestMethod.Get or RequestMethod.Head) // HEAD: Anka sends the headers and drops the body
+    {
+        if (req.PathEquals("/"u8))                  return res.WriteAsync(200, Hello, TextPlain, req.IsKeepAlive, ct);
+        if (req.PathEquals("/search"u8))            return Search(req, res, ct);
+        if (req.PathBytes.StartsWith("/users/"u8))  return GetUser(req, res, ct);
+    }
+
+    if (req.Method == RequestMethod.Post && req.PathEquals("/users"u8))
+        return CreateUser(req, res, ct);
+
+    return res.WriteAsync(404, NotFound, TextPlain, req.IsKeepAlive, ct);
 }
 ```
 
----
+`PathEquals` compares bytes without allocating. Handle `HEAD` together with `GET`; otherwise `HEAD` requests fall
+through to your 404.
 
-### `HttpHeaderNames`
-
-```
-Namespace: Anka
-Access:    public static
-```
-
-Provides commonly used header names as lowercase `ReadOnlySpan<byte>`.
-
-```
-Host · Connection · ContentLength · ContentType · TransferEncoding · Expect
-Accept · AcceptEncoding · Authorization · UserAgent · CacheControl · Cookie
-IfMatch · IfNoneMatch · IfModifiedSince · IfUnmodifiedSince · Origin · Referer
-Location · SetCookie · ETag · LastModified · Vary · WwwAuthenticate · Allow · RetryAfter
-AccessControlAllowOrigin · AccessControlAllowMethods · AccessControlAllowHeaders
-AccessControlMaxAge · AccessControlExposeHeaders
-```
-
----
-
-### `HttpMethod` (enum)
+### Path parameters
 
 ```csharp
-public enum HttpMethod : byte
-{ Unknown=0, Get, Post, Put, Delete, Head, Options, Patch, Trace, Connect }
+// GET /users/42
+static ValueTask GetUser(HttpRequest req, HttpResponseWriter res, CancellationToken ct)
+{
+    var idBytes = req.PathBytes["/users/".Length..];
+    if (!Utf8Parser.TryParse(idBytes, out int id, out var consumed) || consumed != idBytes.Length)
+        return res.WriteAsync(400, "invalid id"u8.ToArray(), TextPlain, req.IsKeepAlive, ct);
+
+    var body = JsonSerializer.SerializeToUtf8Bytes(new User(id, $"user-{id}"), AppJson.Default.User);
+    return res.WriteAsync(200, body, Json, req.IsKeepAlive, ct);
+}
 ```
 
----
+`Utf8Parser` lives in `System.Buffers.Text`.
 
-### `HttpVersion` (enum)
+### Query string
+
+Anka exposes the raw query (`req.QueryBytes`, or `req.QueryString` as a string) but does not split or
+percent-decode it. A small zero-allocation helper:
 
 ```csharp
-public enum HttpVersion : byte
-{ Unknown=0, Http10=1, Http11=2 }
+static class Query
+{
+    /// <summary>Finds <paramref name="key"/> in a raw query string ("a=1&b=2"). Does not percent-decode.</summary>
+    public static bool TryGet(ReadOnlySpan<byte> query, ReadOnlySpan<byte> key, out ReadOnlySpan<byte> value)
+    {
+        while (!query.IsEmpty)
+        {
+            var amp  = query.IndexOf((byte)'&');
+            var pair = amp < 0 ? query : query[..amp];
+            var eq   = pair.IndexOf((byte)'=');
+            var name = eq < 0 ? pair : pair[..eq];
+            if (name.SequenceEqual(key))
+            {
+                value = eq < 0 ? default : pair[(eq + 1)..];
+                return true;
+            }
+
+            query = amp < 0 ? default : query[(amp + 1)..];
+        }
+
+        value = default;
+        return false;
+    }
+}
+
+// GET /search?q=anka&limit=10
+static ValueTask Search(HttpRequest req, HttpResponseWriter res, CancellationToken ct)
+{
+    var q     = Query.TryGet(req.QueryBytes, "q"u8, out var qv) ? Encoding.UTF8.GetString(qv) : "";
+    var limit = Query.TryGet(req.QueryBytes, "limit"u8, out var lv) && Utf8Parser.TryParse(lv, out int n, out _) ? n : 20;
+
+    return res.WriteAsync(200, Encoding.UTF8.GetBytes($"q={q} limit={limit}"), TextPlain, req.IsKeepAlive, ct);
+}
 ```
 
----
+If values can contain `%XX` escapes or `+`, decode them (e.g. `Uri.UnescapeDataString`) after extracting.
 
-### `RequestHandler` (delegate)
+### Request headers
+
+Header names are stored in lowercase. Use the `HttpHeaderNames` constants, or a lowercase UTF-8 literal:
 
 ```csharp
-public delegate ValueTask RequestHandler(
-    HttpRequest request,
-    HttpResponseWriter response,
-    CancellationToken cancellationToken);
+var userAgent = req.Headers.TryGetValue(HttpHeaderNames.UserAgent, out var ua)
+    ? Encoding.ASCII.GetString(ua)   // values are bytes; convert only when you need a string
+    : "unknown";
+
+var custom = req.Headers.TryGetValue("x-request-id"u8, out var id);          // name must be lowercase
+var byName = req.Headers.TryGetValue("X-Request-Id", out var id2);           // string overload lowercases for you
+
+// A header sent more than once
+if (req.Headers.TryGetAllValues(HttpHeaderNames.Accept, out var values))
+{
+    foreach (var value in values) { /* each value is a ReadOnlySpan<byte> */ }
+}
 ```
 
-The user callback passed to the server. Called for every HTTP request.
+### JSON with System.Text.Json
 
----
+Reflection-based `JsonSerializer` calls do not work under Native AOT. Use a source-generated context:
 
-### `AnkaArgumentException`
+```csharp
+record User(int Id, string Name);
+record CreateUserRequest(string? Name);
 
-Derives from `ArgumentException`. Thrown when an invalid argument is provided (e.g. invalid IP).
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(User))]
+[JsonSerializable(typeof(CreateUserRequest))]
+partial class AppJson : JsonSerializerContext;
 
-### `AnkaOutOfRangeException`
+// POST /users  {"name":"anka"}
+static ValueTask CreateUser(HttpRequest req, HttpResponseWriter res, CancellationToken ct)
+{
+    CreateUserRequest? input;
+    try
+    {
+        input = JsonSerializer.Deserialize(req.Body.Span, AppJson.Default.CreateUserRequest);
+    }
+    catch (JsonException)
+    {
+        return res.WriteAsync(400, "invalid json"u8.ToArray(), TextPlain, req.IsKeepAlive, ct);
+    }
 
-Derives from `ArgumentOutOfRangeException`. Thrown when a numeric argument is outside its valid range — port outside 1–65535, or `ServerOptions.MaxRequestBodySize` / `ServerOptions.MaxRequestTargetSize` / `ServerOptions.MaxRequestHeadersSize` set to a negative value.
+    if (string.IsNullOrWhiteSpace(input?.Name))
+        return res.WriteAsync(422, "name is required"u8.ToArray(), TextPlain, req.IsKeepAlive, ct);
 
----
-
-### `ServerOptions`
-
+    var body = JsonSerializer.SerializeToUtf8Bytes(new User(1, input.Name), AppJson.Default.User);
+    return res.WriteAsync(201, body, Json, req.IsKeepAlive, ct);
+}
 ```
-Namespace: Anka
-Access:    public sealed
+
+`req.Body` is the complete body: Anka reads `Content-Length` and chunked bodies fully before calling the
+handler, up to `MaxRequestBodySize` (30 MB by default; larger requests get `413`).
+
+### Response headers
+
+Build header sets that are the same on every response **once**:
+
+```csharp
+static readonly HttpHeader[] CacheHeaders =
+[
+    new HttpHeader(HttpHeaderNames.CacheControl.ToArray(), "max-age=60"u8.ToArray()),
+    new HttpHeader("x-powered-by"u8.ToArray(), "anka"u8.ToArray()),
+];
+
+return res.WriteAsync(200, body, Json, req.IsKeepAlive, CacheHeaders, ct);
 ```
 
-Optional configuration passed to the `Server` constructor. All properties are optional; when `null`, the server picks sensible defaults that scale with processor count.
+For occasional per-request headers the fluent API is shorter but allocates a list per call:
 
-| Property                  | Type                         | Default                          | Description                                                                                                     |
-|---------------------------|------------------------------|----------------------------------|-----------------------------------------------------------------------------------------------------------------|
-| `MinThreadPoolThreads`    | `int?`                       | `ProcessorCount * 2 + 2`         | Minimum worker/IO-completion threads for `ThreadPool`. Never overrides downward.                                |
-| `AcceptorCount`           | `int?`                       | `max(ProcessorCount / 2, 2)`     | Number of parallel accept loops.                                                                                |
-| `Backlog`                 | `int`                        | `512`                            | Backlog passed to `Socket.Listen()`.                                                                            |
-| `DefaultResponseHeaders`  | `IReadOnlyList<HttpHeader>`  | `[]`                             | Headers appended to every response (e.g., security headers). Allocated once at startup — zero per-request cost. |
-| `MaxRequestBodySize`      | `int?`                       | `30_000_000`                     | Maximum allowed request body in bytes. Requests that exceed this limit automatically receive `413 Payload Too Large`. `null` removes the limit — the body is buffered in memory, so only do this behind a proxy that enforces its own limit. |
-| `MaxRequestTargetSize`    | `int?`                       | `null` (unlimited)               | Maximum allowed request-target size in bytes. Requests that exceed this limit automatically receive `414 URI Too Long`. |
-| `MaxRequestHeadersSize`   | `int`                        | `8192`                           | Maximum allowed aggregate size of request header names and values. Requests that exceed this limit, or the built-in header-count cap, automatically receive `431 Request Header Fields Too Large`. |
-| `ReadTimeout`             | `TimeSpan?`                  | `30 s`                           | Idle read timeout: closes connections that make no progress for this long, including idle keep-alive connections. `null` disables it. |
-| `RequestHeadersTimeout`   | `TimeSpan?`                  | `30 s`                           | Absolute deadline for receiving the request line and headers, counted from the first byte of the request. Stops Slowloris clients that send one byte just inside `ReadTimeout`. `null` disables it. |
-| `MaxConcurrentConnections`| `int?`                       | `null` (unlimited)               | Maximum number of connections served at once; extra connections are closed immediately. |
+```csharp
+return res.AddHeader(HttpHeaderNames.Location, "/new-path"u8)
+          .WriteAsync(301, keepAlive: req.IsKeepAlive, cancellationToken: ct);
+```
 
-**Example:**
+Headers that go on **every** response (security headers, branding) belong in `ServerOptions.DefaultResponseHeaders`:
 
 ```csharp
 var options = new ServerOptions
 {
-    AcceptorCount        = 4,
-    MaxRequestBodySize   = 1 * 1024 * 1024,  // 1 MB
-    MaxRequestTargetSize = 8 * 1024,         // 8 KB
-    MaxRequestHeadersSize = 8 * 1024,        // 8 KB
-    ReadTimeout = TimeSpan.FromSeconds(15),
     DefaultResponseHeaders =
     [
         new HttpHeader("x-content-type-options"u8.ToArray(), "nosniff"u8.ToArray()),
-        new HttpHeader("x-frame-options"u8.ToArray(),        "DENY"u8.ToArray()),
-    ]
+        new HttpHeader("referrer-policy"u8.ToArray(), "no-referrer"u8.ToArray()),
+    ],
 };
 ```
 
----
+Header names and values, and the `contentType` argument, are validated: CR, LF and other control characters
+throw `ArgumentException`, so user input cannot inject extra headers. Use lowercase names.
 
-### `HttpHeader`
-
-```
-Namespace: Anka
-Access:    public readonly struct
-```
-
-A name/value pair for HTTP response headers. Create instances once at startup and store in `static readonly` arrays for zero per-request allocation.
+### CORS
 
 ```csharp
-// Byte-based (zero allocation at call time — preferred for hot paths)
-new HttpHeader("x-custom-header"u8.ToArray(), "value"u8.ToArray())
+static readonly HttpHeader[] CorsHeaders =
+[
+    new HttpHeader(HttpHeaderNames.AccessControlAllowOrigin.ToArray(),  "*"u8.ToArray()),
+    new HttpHeader(HttpHeaderNames.AccessControlAllowMethods.ToArray(), "GET, POST, OPTIONS"u8.ToArray()),
+    new HttpHeader(HttpHeaderNames.AccessControlAllowHeaders.ToArray(), "content-type"u8.ToArray()),
+    new HttpHeader(HttpHeaderNames.AccessControlMaxAge.ToArray(),       "600"u8.ToArray()),
+];
 
-// String-based (allocates — use at startup only)
-new HttpHeader("x-custom-header", "value")
+// Preflight
+if (req.Method == RequestMethod.Options)
+    return res.WriteAsync(204, default, default, req.IsKeepAlive, CorsHeaders, ct);
+
+// Actual responses: pass CorsHeaders as extra headers, or put Access-Control-Allow-Origin in DefaultResponseHeaders.
 ```
 
-The constructor throws `ArgumentException` when the name is empty or not an HTTP token, or the value contains CR, LF or another control character (HTAB and bytes ≥ 0x80 are allowed). `contentType` passed to `WriteAsync` is validated the same way. This prevents response splitting when header values come from user input.
+### Streaming responses
 
-| Member  | Type                    | Description                          |
-|---------|-------------------------|--------------------------------------|
-| `Name`  | `ReadOnlyMemory<byte>`  | Header name as lowercase ASCII bytes |
-| `Value` | `ReadOnlyMemory<byte>`  | Header value as ASCII/UTF-8 bytes    |
-
----
-
-### `ResponseContext`
-
-```
-Namespace: Anka
-Access:    public readonly struct
-```
-
-A fluent builder for attaching extra per-request response headers. Obtained via `HttpResponseWriter.AddHeader(...)` (see `HttpResponseWriterExtensions`).
+`GetStream()` returns a `Stream` that sends `Transfer-Encoding: chunked`; the status line and headers go out on
+the first write and the terminating chunk on dispose. It always answers `200` with no `Content-Type`:
 
 ```csharp
-await response
-    .AddHeader(HttpHeaderNames.Location, "/new-path"u8)
-    .WriteAsync(301, default, default, keepAlive: false, ct);
+static async ValueTask StreamAsync(HttpRequest req, HttpResponseWriter res, CancellationToken ct)
+{
+    await using var stream = (HttpResponseStream)res.GetStream(ct);
+    for (var i = 1; i <= 3; i++)
+    {
+        await stream.WriteAsync(Encoding.ASCII.GetBytes($"line {i}\n"), ct);
+    }
 
-
-await response
-    .AddHeader(HttpHeaderNames.AccessControlAllowOrigin, "*"u8)
-    .AddHeader(HttpHeaderNames.AccessControlAllowMethods, "GET, POST"u8)
-    .WriteAsync(200, body, "application/json; charset=utf-8"u8, keepAlive: true, ct);
+    stream.AddTrailer(new HttpHeader("x-line-count"u8.ToArray(), "3"u8.ToArray())); // optional trailers
+}
 ```
 
-> For zero-allocation hot paths, pass a `static readonly HttpHeader[]` directly to `WriteAsync` instead of using the fluent API (which allocates a `List<T>` per call).
-
----
-
-## Class Reference — Internal
-
-### `Connection` (internal sealed)
-
-Manages the lifecycle of each TCP connection.
-
-| Member                                 | Description                                                                                                  |
-|----------------------------------------|--------------------------------------------------------------------------------------------------------------|
-| `static RunAsync(socket, handler, ct)` | Single public entry point. Sets `socket.NoDelay=true`, creates a new `Connection`, runs `ProcessAsync()`.   |
-| `ProcessAsync()`                       | Owns the receive loop, parser loop, handler dispatch, keep-alive lifecycle, and connection-scoped resources  |
-| Sliding receive window                 | Avoids compacting unread bytes after every request; compacts only when the receive tail is full              |
-| `finally` cleanup                      | Returns the `HttpRequest` to `HttpRequestPool`, returns pooled buffers, closes and disposes the socket       |
-
----
-
-### `SocketReceiver` (internal sealed)
-
-Zero-allocation socket receive wrapper. One instance per connection; must be `Dispose()`d on close.
-
-| Member                                 | Description                                                                                                                                                                      |
-|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `ReceiveAsync(socket, buffer)`         | Returns a `ValueTask<int>`. Sync path: data already in kernel buffer → no allocation, no thread switch. Async path: OS I/O thread posts continuation to `ThreadPool` via `IValueTaskSource`. |
-| `Dispose()`                            | Disposes the underlying `SocketAsyncEventArgs`                                                                                                                                  |
-
-`RunContinuationsAsynchronously = true` on the internal `ManualResetValueTaskSourceCore<int>` ensures the OS kqueue/epoll I/O thread is never blocked by request-processing work.
-
----
-
-### `HttpParser` (internal static)
-
-Parses HTTP/1.x requests in a single pass.
-
-| Member                                                 | Description                                                  |
-|--------------------------------------------------------|--------------------------------------------------------------|
-| `TryParse(ref SequenceReader<byte>, out HttpRequest?)` | Two-phase parse. Returns `HttpParseResult` (see below).      |
-| `ScanForComplete(ref reader, out contentLength)`       | Phase 1: zero-allocation scan for complete message           |
-| `TryExtractContentLength(line, ref contentLength)`     | Extracts and validates the `content-length:` value           |
-| `ParseRequestLine(seq, buf, ref writePos, req)`        | Parses method + request-target (all four forms) + version    |
-| `ParseHeaderLine(seq, ref headers)`                    | Parses a single header line                                  |
-| `AddHeaderFromSpan(line, ref headers)`                 | Splits `Name: Value`, calls `headers.Add()`                  |
-| `ComputeKeepAlive(version, ref headers)`               | Computes `IsKeepAlive` from HTTP version + Connection header |
-
-**`HttpParseResult` enum:**
-`Success` · `Incomplete` · `Invalid` · `RequestTargetTooLong` · `HeaderFieldsTooLarge` · `HttpVersionNotSupported` · `ConflictingContentLength` · `MissingHostHeader`
-
----
-
-### `ChunkedBodyParser` (internal static)
-
-Decodes `Transfer-Encoding: chunked` request bodies.
-
-| Member                                                            | Description                                                    |
-|-------------------------------------------------------------------|----------------------------------------------------------------|
-| `TryParseChunkSize(ReadOnlySpan<byte>, out int)`                  | Parses hex chunk-size line, supports chunk extensions           |
-| `TryConsumeChunkData(ReadOnlySpan<byte>, int, out ReadOnlySpan<byte>)` | Extracts chunk data and validates trailing CRLF           |
-| `TryParseTrailers(ReadOnlySpan<byte>)`                            | Detects and skips trailer headers after the final `0\r\n` chunk |
-
----
-
-### `RequestTargetForm` (internal enum)
-
-Identifies the form of the HTTP request-target per RFC 7230 §5.3.
+For another status code, a content type or extra headers, use the chunk API directly:
 
 ```csharp
-Origin = 0,    // /path?query           (most common)
-Absolute = 1,  // http://host/path      (proxy requests)
-Authority = 2, // host:port             (CONNECT only)
-Asterisk = 3   // *                     (OPTIONS only)
+await res.StartChunkedResponseAsync(200, NdJson, req.IsKeepAlive, extraHeaders, ct);
+await res.WriteChunkAsync(chunk1, ct);
+await res.WriteChunkAsync(chunk2, ct);
+await res.FinishChunkedResponseAsync(trailers: default, ct);
 ```
 
----
+For HTTP/1.0 clients, which have no chunked encoding, both APIs write the body unframed and close the
+connection afterwards; trailers are dropped.
 
-### `HttpMethodParser` (internal static)
+### Range requests
 
-| Member                      | Description                                                 |
-|-----------------------------|-------------------------------------------------------------|
-| `Parse(ReadOnlySpan<byte>)` | Byte span → `HttpMethod` enum. Unknown → `Unknown`          |
-| `ToBytes(this HttpMethod)`  | `HttpMethod` enum → `ReadOnlySpan<byte>` (extension method) |
+`req.TryGetRange(length, out start, out end)` reads the `Range` header and resolves `bytes=0-99`, `bytes=100-`
+and `bytes=-50` against the length of your content. `WritePartialAsync` then sends `206 Partial Content` with
+`Content-Range`:
 
-The parser uses a short length/byte dispatch instead of chaining multiple `SequenceEqual` calls. For fixed ASCII method tokens this reduces repeated comparisons on the hot path and produces a simpler branch tree for the JIT.
+```csharp
+// GET /doc
+if (req.TryGetRange(Document.Length, out var start, out var end))
+{
+    var slice = Document.AsMemory((int)start, (int)(end - start + 1));
+    return res.WritePartialAsync(start, end, Document.Length, slice, TextPlain, req.IsKeepAlive, DocumentHeaders, ct);
+}
 
----
-
-### `HttpVersionParser` (internal static)
-
-| Member                      | Description                                                                                  |
-|-----------------------------|----------------------------------------------------------------------------------------------|
-| `Parse(ReadOnlySpan<byte>)` | `"HTTP/1.1"` → `Http11`, `"HTTP/1.0"` → `Http10`, other → `Unknown`                         |
-| `IsMalformed(ReadOnlySpan<byte>)` | `true` when the token is not 8 bytes or not in the format `HTTP/x.y` (digits only)     |
-
----
-
-### `HttpRequestPool` (internal static)
-
-CAS-based object pool with 32 slots. Lock-free, AOT-safe.
-
-| Member        | Description                                                                                                       |
-|---------------|-------------------------------------------------------------------------------------------------------------------|
-| `Rent()`      | `Interlocked.Exchange` over the slots — returns the first cached instance, otherwise `new HttpRequest()`           |
-| `Return(req)` | Returns `req.BodyBuffer` to `ArrayPool`, resets the request, then `Interlocked.CompareExchange` into the first empty slot — if all slots are full, the instance is left for GC. The header buffer (≤ 64 KB) is kept; the body buffer is not, so one large upload cannot pin memory for the life of the process. |
-
-**Why not ConcurrentQueue?**  
-`ConcurrentQueue<T>` allocates a new internal segment (~608 bytes) every 32 enqueue/dequeue operations. This caused 608 B to appear in microbenchmarks. CAS slots achieve **0 B**.
-
----
-
-## Memory Model
-
-```
-Memory movement per connection:
-
-  Connection.ProcessAsync()
-  ├── ArrayPool.Rent(64 KB)               ← receive buffer (reused across all requests on the connection)
-  ├── HttpRequestPool.Rent()              ← HttpRequest instance (reused across requests on the connection)
-  ├── HttpResponseWriter(socket)          ← connection-scoped response buffer
-  └── SocketReceiver()                    ← connection-scoped SocketAsyncEventArgs
-
-Memory movement per request:
-
-  HttpParser.TryParse()
-  ├── Reuses request.Buffer when large enough
-  ├── Reuses request.BodyBuffer when large enough
-  └── Copies only path/query/header slices and any Content-Length body
-
-Connection closes:
-  ├── HttpRequestPool.Return(request)   ← releases BodyBuffer, keeps the header buffer
-  ├── ArrayPool.Return(receive buffer)
-  ├── SocketReceiver.Dispose()            ← disposes SocketAsyncEventArgs
-  └── HttpResponseWriter.Dispose()        ← returns response buffer
+return res.WriteAsync(200, Document, TextPlain, req.IsKeepAlive, DocumentHeaders, ct);
 ```
 
-**Result:** repeated requests on an existing connection stay on an allocation-free fast path in the parser microbenchmarks, while connection startup still pays its one-time pooled buffer rentals.
+`TryGetRange` returns `false` for requests other than `GET`, for multi-range or malformed values and for ranges
+that start past the end.
+In those cases serve the full `200` response, as above. Every `200` response
+carries `Accept-Ranges: bytes`.
 
----
+### Conditional requests (ETag → 304)
 
-## Performance Profile
+Put an `ETag` header on a `200` response. When the request's `If-None-Match` equals it byte for byte, Anka
+turns the response into `304 Not Modified` without a body:
 
-> **Environment:** Apple M3 Max · 16 logical cores · macOS 26.3.1 · .NET 8.0.25 · Native AOT (osx-arm64)  
-> Microbenchmarks: `dotnet run --project Benchmark/Anka.Benchmark -c Release`  
-> End-to-end: `Test/LoadTest/Anka.Wrk.LoadTest` (wrk, 10 s per level, loopback)  
-> Full results: [`docs/`](docs/) — one file per OS per run (e.g. `throughput-results-macos-2026-04-08.md`)
-
-### Running Benchmarks on Linux
-
-Docker or Podman is required. PostgreSQL is started automatically — no manual setup needed.
-
-```shell
-# linux/amd64 (default)
-./scripts/run-linux-benchmark.sh
-
-# linux/arm64 — runs natively on Apple Silicon (much faster, no emulation)
-./scripts/run-linux-benchmark.sh linux/arm64
+```csharp
+static readonly HttpHeader[] DocumentHeaders =
+[
+    new HttpHeader(HttpHeaderNames.ETag.ToArray(), "\"v1\""u8.ToArray()),
+    new HttpHeader(HttpHeaderNames.CacheControl.ToArray(), "max-age=60"u8.ToArray()),
+];
 ```
 
-The script spins up PostgreSQL, initialises the schema, runs the full suite (framework + DB tests), then tears everything down. Results are written to `docs/throughput-results-linux-{date}.md`.
+Only an exact single-value match is recognised; lists (`"a", "b"`), `*` and weak comparison (`W/`) are not.
+Compare `If-None-Match` yourself for those.
 
----
+### File uploads (multipart/form-data)
 
-### Startup Snapshot
+`MultipartParser` splits a body into parts; `MultipartParser.TryGetBoundary` reads the boundary from
+`Content-Type`:
 
-| | Anka (Native AOT) | Kestrel (JIT) |
-|---|---:|---:|
-| Time to listen | 411 ms | 203 ms |
-| Time to ready | **2.3 ms** | 140 ms |
-| First response | 20 ms | 26 ms |
-| Startup alloc | **124.5 KB** | 2.50 MB |
-| RSS after first response | **15.1 MB** | 97.9 MB |
+```csharp
+static ValueTask Upload(HttpRequest req, HttpResponseWriter res, CancellationToken ct)
+{
+    if (!req.Headers.TryGetValue(HttpHeaderNames.ContentType, out var contentType) ||
+        !MultipartParser.TryGetBoundary(contentType, out var boundary))
+    {
+        return res.WriteAsync(415, default, default, req.IsKeepAlive, ct);
+    }
 
-> Kestrel binds the port faster because it reuses existing OS handles; Anka is slower because it creates a fresh `Socket`. JIT warmup adds ~140 ms to Kestrel's "ready" time.
+    var parser = new MultipartParser(new ReadOnlySequence<byte>(req.Body), boundary);
+    while (parser.TryReadNextPart(out var part))
+    {
+        if (part.TryGetContentDisposition(out var name, out var fileName))
+        {
+            // name / fileName / part.Content are ReadOnlySequence<byte> slices of req.Body
+        }
+    }
 
----
-
-### Microbenchmarks — zero allocations throughout
-
-> Run with `dotnet run --project Benchmark/Anka.Benchmark -c Release`  
-> BenchmarkDotNet v0.15.8 · .NET 8.0.25 · Arm64 RyuJIT
-
-#### HTTP Parser
-
-> Parses a complete raw HTTP/1.x byte buffer into `HttpRequest` with no heap allocation.
-
-| Benchmark | Mean | Allocated |
-|---|---:|---:|
-| SimpleGet | 92.9 ns | **0 B** |
-| GetWithManyHeaders (10 headers) | 420.0 ns | **0 B** |
-| PostWithSmallBody (256 B body) | 244.6 ns | **0 B** |
-| PostWithLargeBody (64 KB body) | 1,651 ns | **0 B** |
-
-#### HTTP Headers
-
-> `HttpHeaders` is an inline-array struct — no heap allocation on add or lookup.
-
-| Benchmark | Mean | Allocated |
-|---|---:|---:|
-| Add_TenHeaders | 75.2 ns | **0 B** |
-| TryGetValue — byte span, first entry | 84.8 ns | **0 B** |
-| TryGetValue — byte span, last entry | 94.3 ns | **0 B** |
-| TryGetValue — byte span, missing | 92.7 ns | **0 B** |
-| TryGetValue — string, case-insensitive | 94.6 ns | **0 B** |
-
-#### HTTP Method Parser
-
-> Byte-span trie — common verbs resolve in sub-nanosecond time.
-
-| Method | Mean |
-|---|---:|
-| GET | 0.71 ns |
-| POST | 0.99 ns |
-| PUT | 0.71 ns |
-| HEAD | 0.98 ns |
-| PATCH | 1.32 ns |
-| DELETE | 1.57 ns |
-| OPTIONS | 1.83 ns |
-| CONNECT | 1.90 ns |
-
-#### HTTP Version Parser
-
-| Version | Mean |
-|---|---:|
-| HTTP/1.1 | 0.09 ns |
-| HTTP/1.0 | 0.21 ns |
-
----
-
-### End-to-End Throughput — Framework Tests (wrk · c = 400)
-
-> No database. Raw HTTP pipeline throughput on loopback.
-
-| Scenario | Anka (AOT) req/s | Kestrel (JIT) req/s |
-|---|---:|---:|
-| Plain Text GET | 133,000 | 141,700 |
-| JSON API GET | 131,600 | 140,400 |
-| GET w/ Multiple Headers | 133,300 | 140,900 |
-| POST Echo (256 B body) | 127,100 | 131,200 |
-| Large Response GET (~2 KB) | 129,800 | 135,700 |
-
-> Anka and Kestrel deliver comparable throughput on loopback. Kestrel's JIT-generated native code edges ahead at high concurrency due to optimisations that are not available to the AOT compiler. Anka's advantage is memory: **~15 MB RSS** vs **~98 MB** at steady state, and near-zero startup allocation (124.5 KB vs 2.5 MB).
-
----
-
-### End-to-End Throughput — TechEmpower-Style DB Tests (PostgreSQL · peak req/s)
-
-| Scenario | Anka (AOT) | Kestrel (JIT) |
-|---|---:|---:|
-| Single DB Query | 23,500 | 24,500 |
-| Multiple Queries (20) | 1,300 | 1,300 |
-| Fortunes | 22,300 | 23,400 |
-| DB Updates (20) | 622 | 629 |
-| Cached Queries (100) | 107,200 | 145,600 |
-
-> DB-bound tests are limited by PostgreSQL connection pool saturation, not by the HTTP layer. Per-concurrency-level detail tables are in [`docs/`](docs/).
-
----
-
-## Project Structure
-
-```
-Anka/
-├── Anka.slnx
-│
-├── src/Anka/                      ← Library
-│   ├── Anka.csproj                  (AOT, InternalsVisibleTo: Test + Benchmark)
-│   ├── anka-logo.png                (package icon)
-│   └── src/
-│       ├── Core/                  ← Public API
-│       │   ├── HttpHeader.cs        (name/value pair struct for response headers)
-│       │   ├── HttpHeaderNames.cs   (pre-defined header name constants)
-│       │   ├── HttpHeaders.cs       (zero-alloc header struct, InlineArray)
-│       │   ├── HttpMethod.cs        (enum: byte)
-│       │   ├── HttpRequest.cs       (parsed request + buffer ownership)
-│       │   ├── HttpResponseStream.cs(chunked response stream, connection-scoped reuse)
-│       │   ├── HttpResponseWriter.cs(response writer, ArrayPool)
-│       │   ├── HttpResponseWriterExtensions.cs (fluent AddHeader API)
-│       │   ├── HttpVersion.cs       (enum: byte)
-│       │   ├── RequestHandler.cs    (delegate definition)
-│       │   ├── ResponseContext.cs   (fluent header builder)
-│       │   ├── Server.cs            (public entry point)
-│       │   └── ServerOptions.cs     (optional server configuration)
-│       ├── Extensions/
-│       │   └── HttpRequestExtensions.cs (helper extensions for HttpRequest)
-│       ├── Internal/              ← Implementation details (internal)
-│       │   ├── ChunkedBodyParser.cs  (Transfer-Encoding: chunked decoder)
-│       │   ├── Connection.cs        (socket lifecycle + sliding receive window)
-│       │   ├── HttpMethodParser.cs  (byte span → HttpMethod enum)
-│       │   ├── HttpParseResult.cs   (parse result enum)
-│       │   ├── HttpParser.cs        (two-phase HTTP/1.x parser)
-│       │   ├── HttpRequestPool.cs   (CAS object pool, 32 slots)
-│       │   ├── HttpVersionParser.cs (byte span → HttpVersion enum + malformed check)
-│       │   ├── RequestTargetForm.cs (origin / absolute / authority / asterisk enum)
-│       │   └── SocketReceiver.cs    (zero-alloc SocketAsyncEventArgs + IValueTaskSource)
-│       └── Exceptions/
-│           ├── AnkaArgumentException.cs
-│           └── AnkaOutOfRangeException.cs
-│
-├── Test/Anka.Test/                ← xUnit tests (242 tests)
-│   ├── ChunkedBodyParserTests.cs
-│   ├── ContentLengthValidationTests.cs
-│   ├── CustomResponseHeaderTests.cs
-│   ├── HttpHeadersTests.cs
-│   ├── HttpMethodParserTests.cs
-│   ├── HttpParserTests.cs
-│   ├── HttpRequestTests.cs
-│   ├── HttpVersionParserTests.cs
-│   ├── RequestBodySizeLimitTests.cs
-│   ├── RequestHeaderAndVersionValidationTests.cs
-│   ├── RequestTargetSizeLimitTests.cs
-│   ├── ServerTests.cs
-│   └── TransportTests.cs
-│
-├── Test/LoadTest/
-│   ├── Anka.HttpConsole/          ← Native AOT load-test target
-│   ├── Kestrel.HttpConsole/       ← Minimal ASP.NET Core comparison target
-│   └── Anka.Wrk.LoadTest/         ← wrk-based startup + throughput harness
-├── Benchmark/Anka.Benchmark/      ← BenchmarkDotNet micro-benchmarks
-│   ├── ChunkedBodyParserBenchmarks.cs
-│   ├── HttpHeadersBenchmarks.cs
-│   ├── HttpMethodParserBenchmarks.cs
-│   ├── HttpParserBenchmarks.cs
-│   └── HttpVersionParserBenchmarks.cs
-├── scripts/
-│   └── run-linux-benchmark.sh     ← Docker helper: run load test on Linux
-└── Dockerfile.benchmark           ← Linux load-test image (wrk + .NET SDK + AOT tools)
+    return res.WriteAsync(204, default, default, req.IsKeepAlive, ct);
+}
 ```
 
----
+The whole upload is buffered in memory first, so size `MaxRequestBodySize` for your largest file. Treat file names
+as untrusted input.
 
-## Test Coverage
+### Readiness and startup metrics
 
-**254 tests** — all passing.
+`ListeningStarted` fires once the socket is bound and accepting:
+
+```csharp
+server.ListeningStarted += endpoint => Console.WriteLine($"ready on {endpoint}");
+```
+
+Anka writes nothing to standard output. The only thing it logs is an unhandled handler exception (type and
+message) on standard error.
+
+## Configuration
+
+Pass a `ServerOptions` to the constructor. Every property is optional.
+
+```csharp
+var server = new Server(handler, port: 8080, host: "0.0.0.0", options: new ServerOptions
+{
+    MaxRequestBodySize       = 1 * 1024 * 1024,
+    MaxRequestTargetSize     = 8 * 1024,
+    ReadTimeout              = TimeSpan.FromSeconds(15),
+    MaxConcurrentConnections = 10_000,
+});
+```
+
+| `Server` constructor | Default | Notes |
+|---|---|---|
+| `port` | — | 1–65535, otherwise `AnkaOutOfRangeException` |
+| `host` | `"127.0.0.1"` | An IP literal. `"0.0.0.0"` listens on all IPv4 interfaces (required in containers); `"::"` listens on all interfaces, IPv6 and IPv4 (dual-stack); `"::1"` is IPv6 loopback. Host names such as `localhost` are not resolved; invalid values throw `AnkaArgumentException`. |
+
+| `ServerOptions` | Default | Effect |
+|---|---|---|
+| `MaxRequestBodySize` | 30,000,000 bytes | Larger bodies (declared or chunked) get `413`. `null` removes the limit; bodies are buffered in memory, so only do that behind a proxy that limits them. |
+| `MaxRequestTargetSize` | unlimited | Longer request-targets (path + query) get `414`. |
+| `MaxRequestHeadersSize` | 8 KB | Total bytes of header names + values; more gets `431`. Also capped internally at ~64 KB together with the request-target. |
+| `ReadTimeout` | 30 s | Closes a connection that sends nothing for this long, including idle keep-alive connections. `null` disables. |
+| `RequestHeadersTimeout` | 30 s | Absolute deadline for the complete request line and headers, from the first byte. Stops slow-header (Slowloris) clients. `null` disables. |
+| `MaxConcurrentConnections` | unlimited | Connections above the limit are closed immediately without a response. |
+| `ShutdownTimeout` | 10 s | How long a shutdown waits for requests already in the handler; see [Shutdown behaviour](#shutdown-behaviour). |
+| `DefaultResponseHeaders` | none | Headers added to every response. |
+| `AcceptorCount` | `max(ProcessorCount / 2, 2)` | Parallel accept loops. |
+| `Backlog` | 512 | Listen backlog. |
+| `MinThreadPoolThreads` | `ProcessorCount * 2 + 2` | Raised at startup to avoid slow thread injection under bursts; never lowered. |
+
+Negative sizes or timeouts, and `MaxConcurrentConnections < 1`, throw `AnkaOutOfRangeException`.
+
+## What Anka handles for you
+
+Before your handler runs, Anka validates the request and answers these cases itself (the connection is closed
+afterwards):
+
+| Status | When |
+|---|---|
+| `400 Bad Request` | Malformed request line or headers, unknown method, control characters in the target or a header, header line without a colon, obsolete line folding, invalid or conflicting `Content-Length`, both `Content-Length` and `Transfer-Encoding`, unsupported transfer coding, malformed chunked body, missing / duplicate / invalid `Host` on HTTP/1.1 |
+| `411 Length Required` | `POST`, `PUT` or `PATCH` without `Content-Length` or `Transfer-Encoding` |
+| `413 Payload Too Large` | Body exceeds `MaxRequestBodySize` |
+| `414 URI Too Long` | Request-target exceeds `MaxRequestTargetSize` |
+| `431 Request Header Fields Too Large` | Headers exceed `MaxRequestHeadersSize` or there are more than 64 of them |
+| `505 HTTP Version Not Supported` | Well-formed but unsupported version, e.g. `HTTP/2.0` |
+
+And during a request:
+
+- **`Expect: 100-continue`** is answered with `100 Continue` before the body is read.
+- **Chunked request bodies** are decoded into `req.Body`; trailer fields are in `req.Trailers`.
+- **Pipelined requests** on one connection are processed in order.
+- **`HEAD`** responses keep their headers (including `Content-Length`) and drop the body.
+- **`204`, `304` and `1xx`** responses are sent without body and without `Content-Length` / `Content-Type`.
+- **Every response** carries `Server: Anka`, `Date`, `Connection` and, unless chunked or body-less,
+  `Content-Length`. `200` responses also carry `Accept-Ranges: bytes`.
+- **The response version** follows the request: HTTP/1.0 requests get `HTTP/1.0` responses.
+- **Status lines** use the standard reason phrase for every code registered in RFC 9110 plus 102, 103, 207,
+  208, 226, 423, 424, 428, 429, 431, 451, 506–508 and 511. Other codes are sent with an empty reason phrase,
+  which RFC 9112 allows. Status codes below 200 or above 999 throw `ArgumentOutOfRangeException`: 1xx codes are
+  interim responses and cannot be the final one.
+
+Request-targets in origin form (`/path?q`), absolute form (`http://host/path`), authority form (`CONNECT
+host:port`) and asterisk form (`OPTIONS *`) are all accepted; an absolute-form target must agree with `Host`.
+
+## Deployment
+
+### Always behind a reverse proxy
+
+Anka has no TLS. Put it behind nginx, Caddy, Envoy, a cloud load balancer or an ingress controller that
+terminates TLS and forwards HTTP/1.1. Keep the limits in the proxy at least as strict as Anka's.
+
+### Container image
+
+A multi-stage build compiles the native binary and ships it on a minimal, non-root base image:
+
+```dockerfile
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY *.csproj ./
+RUN dotnet restore --use-current-runtime
+COPY . .
+RUN dotnet publish -c Release --use-current-runtime -o /app
+
+# No .NET runtime needed: the Native AOT binary only depends on libc & co. Chiseled images run as non-root.
+FROM mcr.microsoft.com/dotnet/runtime-deps:8.0-noble-chiseled
+WORKDIR /app
+COPY --from=build /app/HelloAnka .
+EXPOSE 8080
+ENTRYPOINT ["./HelloAnka"]
+```
+
+Listen on `host: "0.0.0.0"` inside the container; the default `127.0.0.1` is not reachable through a published
+port. With the `SIGTERM` handler from [Getting started](#2-write-the-server), `docker stop` returns immediately.
+The resulting image is about 15 MB.
+
+### Shutdown behaviour
+
+Cancelling the token passed to `StartAsync` starts a graceful shutdown:
+
+1. The listener closes; no new connections are accepted.
+2. Connections that are not running a handler (idle keep-alive connections, requests still being received) are
+   closed right away.
+3. Requests already inside the handler may finish; their responses carry `Connection: close`.
+4. After `ServerOptions.ShutdownTimeout` (10 s by default) the handler's `CancellationToken` is cancelled and
+   the remaining connections are closed.
+
+`StartAsync` returns once every connection has ended. Keep `ShutdownTimeout` below the platform's grace period
+(Kubernetes waits 30 s by default before `SIGKILL`); `TimeSpan.Zero` aborts in-flight requests immediately.
+
+## Writing fast handlers
+
+Anka's own hot path allocates nothing; whether your service does depends on the handler.
+
+- Keep constant bodies, content types and header arrays in `static readonly` fields.
+- Prefer `PathEquals` / `PathBytes` / `QueryBytes` over `Path` / `QueryString`, which create strings.
+- Prefer a `static readonly HttpHeader[]` over `AddHeader(...)`, which allocates a list per call.
+- Serialize JSON with a source-generated `JsonSerializerContext`; `SerializeToUtf8Bytes` allocates the result
+  array, so write directly into a pooled buffer if that matters.
+- Return the `ValueTask` from `WriteAsync` directly when there is nothing else to await; `async` handlers pay for
+  a state machine when they complete asynchronously.
+- Measure with `dotnet-counters` or BenchmarkDotNet's `[MemoryDiagnoser]` rather than guessing.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `CS1503: cannot convert from 'System.ReadOnlySpan<byte>' to 'System.ReadOnlyMemory<byte>'` | A `"..."u8` literal was passed as body or content type. Store it first: `static readonly byte[] X = "..."u8.ToArray();`. |
+| Works locally, not reachable from Docker / another machine | The server listens on `127.0.0.1` by default. Pass `host: "0.0.0.0"`. |
+| `HEAD` requests return 404 | Routing only checks `RequestMethod.Get`; match `Get or Head`. |
+| `InvalidOperationException: The response has already started` | Two responses were written for one request. Return after the first, or check `res.HasStarted`. |
+| JSON works with `dotnet run` but fails in the published binary | Reflection-based `JsonSerializer` overloads; use a `JsonSerializerContext` (see [JSON](#json-with-systemtextjson)). Publish once and read the `IL2026` / `IL3050` warnings. |
+| Garbage data in a background task | `req.Body` or header spans were used after the handler returned. Copy them first. |
+
+## API reference
+
+All public types are in the `Anka` namespace unless noted.
+
+### `Server`
+
+| Member | Description |
+|---|---|
+| `Server(RequestHandler handler, int port, string host = "127.0.0.1", ServerOptions? options = null)` | See [Configuration](#configuration). |
+| `Task StartAsync(CancellationToken cancellationToken = default)` | Binds and serves until the token is cancelled, then shuts down gracefully and returns. |
+| `event Action<IPEndPoint>? ListeningStarted` | Raised once the socket is accepting connections. |
+
+### `HttpRequest`
+
+| Member | Type | Description |
+|---|---|---|
+| `Method` | `RequestMethod` | `Get`, `Head`, `Post`, `Put`, `Delete`, `Patch`, `Options`, `Trace`, `Connect` |
+| `Version` | `HttpVersion` | `Http10` or `Http11` |
+| `PathBytes` | `ReadOnlySpan<byte>` | Path without the query, not percent-decoded |
+| `PathEquals(ReadOnlySpan<byte>)` | `bool` | Allocation-free path comparison |
+| `Path` | `string` | ASCII string of `PathBytes`, created on first access |
+| `QueryBytes` | `ReadOnlySpan<byte>` | Text after `?`, empty if none |
+| `QueryString` | `string?` | ASCII string of `QueryBytes`, `null` if there is no query |
+| `Headers` | `HttpHeaders` | Request headers |
+| `Trailers` | `HttpHeaders` | Trailer fields of a chunked request body |
+| `Body` | `ReadOnlyMemory<byte>` | Complete request body; empty if none |
+| `IsKeepAlive` | `bool` | Whether the connection should stay open |
+
+### `HttpHeaders` (struct)
+
+| Member | Description |
+|---|---|
+| `bool TryGetValue(ReadOnlySpan<byte> lowercaseName, out ReadOnlySpan<byte> value)` | First value of a header. The name must be lowercase. |
+| `bool TryGetValue(string name, out ReadOnlySpan<byte> value)` | Same, any casing (names up to 128 characters). |
+| `bool TryGetAllValues(ReadOnlySpan<byte> lowercaseName, out HeaderValues values)` | All values of a repeated header; enumerate with `foreach`. |
+| `int Count` | Number of header fields. |
+
+`HttpHeaderNames` provides lowercase names as `ReadOnlySpan<byte>`: `Host`, `Connection`, `ContentLength`,
+`ContentType`, `TransferEncoding`, `Accept`, `AcceptEncoding`, `Authorization`, `UserAgent`, `CacheControl`,
+`Cookie`, `Expect`, `Range`, `IfRange`, `IfMatch`, `IfNoneMatch`, `IfModifiedSince`, `IfUnmodifiedSince`, `Origin`,
+`Referer`, `Location`, `SetCookie`, `ETag`, `LastModified`, `Vary`, `WwwAuthenticate`, `Allow`, `RetryAfter`,
+`ContentRange`, `AcceptRanges`, `AccessControlAllowOrigin`, `AccessControlAllowMethods`,
+`AccessControlAllowHeaders`, `AccessControlMaxAge`, `AccessControlExposeHeaders` (and the value `Chunked`).
+Use `.ToArray()` when you need them as `HttpHeader` names.
+
+### `HttpResponseWriter`
+
+| Member | Description |
+|---|---|
+| `WriteAsync(int statusCode, ReadOnlyMemory<byte> body = default, ReadOnlyMemory<byte> contentType = default, bool keepAlive = true, CancellationToken ct = default)` | Complete response with `Content-Length`. Bodies up to 4 KB go out in the same send as the headers. |
+| `WriteAsync(int statusCode, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte> contentType, bool keepAlive, ReadOnlySpan<HttpHeader> extraHeaders, CancellationToken ct = default)` | Same, with extra headers. |
+| `WritePartialAsync(long rangeStart, long rangeEnd, long totalLength, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte> contentType, bool keepAlive = true, ReadOnlySpan<HttpHeader> extraHeaders = default, CancellationToken ct = default)` | `206 Partial Content` with `Content-Range: bytes start-end/total` (end inclusive). |
+| `StartChunkedResponseAsync(int statusCode, ReadOnlyMemory<byte> contentType = default, bool keepAlive = true, ReadOnlySpan<HttpHeader> extraHeaders = default, CancellationToken ct = default)` | Starts a `Transfer-Encoding: chunked` response. |
+| `WriteChunkAsync(ReadOnlyMemory<byte> chunk, CancellationToken ct = default)` | Writes one chunk. Empty chunks are ignored. |
+| `FinishChunkedResponseAsync(ReadOnlySpan<HttpHeader> trailers = default, CancellationToken ct = default)` | Terminating chunk plus optional trailers. |
+| `Stream GetStream(CancellationToken ct = default)` | `HttpResponseStream` over the chunk API, `200` only. |
+| `bool HasStarted` | `true` once a response has been started for the current request. |
+| `AddHeader(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)` / `AddHeader(string, string)` | Extension methods returning a `ResponseContext` with `AddHeader`, `WriteAsync` and `StartChunkedResponseAsync`. Allocates. |
+
+Do not call `Dispose()`; the connection owns the writer.
+
+### `HttpResponseStream`
+
+A write-only `Stream` (`CanRead`/`CanSeek` are `false`). Additionally:
+
+| Member | Description |
+|---|---|
+| `void AddTrailer(HttpHeader header)` | Trailer sent with the terminating chunk. |
+| `ValueTask FinishAsync(CancellationToken ct = default)` | Sends the terminating chunk; also called by `DisposeAsync`. |
+
+### `HttpHeader` (struct)
+
+| Member | Description |
+|---|---|
+| `HttpHeader(ReadOnlyMemory<byte> name, ReadOnlyMemory<byte> value)` | No allocation. Throws `ArgumentException` for an empty or non-token name, or control characters in the value. |
+| `HttpHeader(string name, string value)` | Converts to ASCII and lowercases the name. Allocates; use at startup. |
+| `Name`, `Value` | `ReadOnlyMemory<byte>` |
+
+### `MultipartParser` (`ref struct`)
+
+| Member | Description |
+|---|---|
+| `static bool TryGetBoundary(ReadOnlySpan<byte> contentType, out ReadOnlySpan<byte> boundary)` | Boundary of a `multipart/form-data` Content-Type (quoted or token, 1–70 characters). |
+| `MultipartParser(ReadOnlySequence<byte> body, ReadOnlySpan<byte> boundary)` | `boundary` without the leading `--`. |
+| `bool TryReadNextPart(out MultipartPart part)` | Next part, or `false` at the closing boundary or on malformed input. |
+| `MultipartPart.Headers`, `MultipartPart.Content` | `ReadOnlySequence<byte>` slices of the body. |
+| `bool MultipartPart.TryGetContentDisposition(out ReadOnlySequence<byte> name, out ReadOnlySequence<byte> fileName)` | `name` and `filename` parameters (quoted or token). |
+
+### Other types
+
+| Type | Description |
+|---|---|
+| `RequestHandler` | `delegate ValueTask RequestHandler(HttpRequest request, HttpResponseWriter response, CancellationToken cancellationToken)` |
+| `RequestMethod` | `enum : byte { Unknown, Get, Post, Put, Delete, Head, Options, Patch, Trace, Connect }` |
+| `HttpVersion` | `enum : byte { Unknown, Http10, Http11 }` |
+| `ServerOptions` | See [Configuration](#configuration). `DefaultMaxRequestBodySize`, `DefaultTimeout` and `DefaultShutdownTimeout` hold the defaults. |
+| `AnkaArgumentException` | `ArgumentException` for an invalid host. |
+| `AnkaOutOfRangeException` | `ArgumentOutOfRangeException` for an invalid port or option value. |
+
+## Limitations
+
+| | |
+|---|---|
+| HTTP/2, HTTP/3 | Not planned; HTTP/1.0 and HTTP/1.1 only. HTTP/0.9 is rejected. |
+| TLS | Not built in; terminate at a reverse proxy. |
+| Host names | `host` must be an IP literal; names such as `localhost` are not resolved. |
+| WebSockets / `Upgrade` | Not supported. |
+| Compression | No built-in `Content-Encoding`; compress or decompress in the handler. |
+| Request bodies | Buffered in memory before the handler runs; no streaming request bodies. |
+| Routing, middleware, DI, auth | Out of scope by design. |
+| `If-Range`, `If-Modified-Since`, multi-range | Not handled automatically. |
+
+## Contributing
 
 ```bash
+dotnet build Anka.slnx --nologo
 dotnet test Anka.slnx --nologo
+dotnet run --project Benchmark/Anka.Benchmark -c Release   # hot paths must report 0 B allocated
 ```
 
-| Test Suite | Tests | Coverage Area |
-|---|---:|---|
-| `HttpParserTests` | 49 | Full request parsing, all target forms, error paths |
-| `HttpRequestTests` | 21 | Request object lifecycle, reset, disposal |
-| `HttpHeadersTests` | 13 | Header add/lookup, `TryGetAllValues`, duplicate headers |
-| `ServerTests` | 17 | End-to-end server behaviour, graceful shutdown |
-| `TransportTests` | 15 | Keep-alive, pipelining, HEAD/304 suppression, 100-continue |
-| `ContentLengthValidationTests` | 15 | Content-Length parsing, conflicts, malformed values |
-| `CustomResponseHeaderTests` | 14 | Default/extra response headers, security headers |
-| `ChunkedBodyParserTests` | 12 | Chunk parsing, trailers, overflow, invalid chunks |
-| `RfcComplianceTests` | 8 | RFC-specific edge cases, obs-fold, trailers, skip CRLF |
-| `RequestHeaderAndVersionValidationTests` | 10 | Host validation, HTTP version errors, 400/505 |
-| `RequestBodySizeLimitTests` | 10 | Body size enforcement, 413 responses |
-| `HttpVersionParserTests` | 8 | Version parsing, malformed token detection |
-| `RequestTargetSizeLimitTests` | 7 | Target size enforcement, 414 responses |
-| `HttpMethodParserTests` | 6 | All HTTP method tokens, unknown methods |
-| `StreamingTests` | 4 | Chunked response stream, `GetStream()`, `CopyToAsync` |
-| `HttpHardeningRegressionTests` | 57 | `Connection` token lists, malformed header lines, chunk extensions, Range parsing, one-response-per-request, keep-alive agreement, HTTP/1.0 streaming, response header validation, multipart delimiters |
+- [docs/architecture.md](https://github.com/selcukgural/Anka/blob/main/docs/architecture.md): request
+  lifecycle, components, memory model, repository layout.
+- [docs/performance.md](https://github.com/selcukgural/Anka/blob/main/docs/performance.md): benchmark results and
+  how to run the load tests.
+- [AGENTS.md](https://github.com/selcukgural/Anka/blob/main/AGENTS.md): conventions that keep the code AOT-safe
+  and allocation-free.
 
----
+**CI.** `.github/workflows/ci.yml` runs on every push to `main` and every pull request: build and tests on Ubuntu
+and macOS, a Native AOT publish of `Anka.HttpConsole` that fails on any `IL` warning followed by an HTTP smoke
+test, and `dotnet pack`.
 
-## Contributing and Development
-
-### Running Tests
+**Releases.** Bump `<Version>` and `<PackageReleaseNotes>` in `src/Anka/Anka.csproj`, merge to `main`, then push
+a matching tag:
 
 ```bash
-dotnet test Anka.slnx --nologo
+git tag v0.0.1-beta.6
+git push origin v0.0.1-beta.6
 ```
 
-### Running Benchmarks
+`.github/workflows/release.yml` checks that the tag matches the project version and is on `main`, runs the tests,
+publishes to nuget.org with [Trusted Publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing)
+(OIDC, no stored API key) and creates a GitHub Release with the packages attached.
 
-```bash
-dotnet run --project Benchmark/Anka.Benchmark -c Release
-```
+## License
 
-### Load Testing
-
-Run the comparison harness:
-```bash
-dotnet run --project Test/LoadTest/Anka.Wrk.LoadTest --configuration Release
-```
-
-### Continuous Integration
-
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
-
-- **build & test** on Ubuntu and macOS (`dotnet build` + `dotnet test`, TRX results uploaded as artifacts);
-- **native aot smoke test**: publishes `Anka.HttpConsole` with `PublishAot`, fails on any `IL` trim/AOT warning, then starts the binary and checks `/plaintext` and `/json` over HTTP;
-- **pack**: builds the NuGet package.
-
-### Releasing
-
-Releases are cut by pushing a tag that matches `<Version>` in `src/Anka/Anka.csproj`:
-
-```bash
-# 1. Bump <Version> (and <PackageReleaseNotes>) in src/Anka/Anka.csproj, merge to main
-# 2. Tag the merge commit on main and push the tag
-git tag v0.0.1-beta.5
-git push origin v0.0.1-beta.5
-```
-
-`.github/workflows/release.yml` then:
-
-1. checks that the tag equals the project version and points to a commit on `main`;
-2. builds, runs the tests and packs `Anka.nupkg` + `Anka.snupkg`;
-3. publishes to nuget.org with [Trusted Publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing) (OIDC, no stored API key) from the `nuget` environment;
-4. creates a GitHub Release with generated notes and the packages attached (marked pre-release for versions with a `-suffix`).
+[MIT](https://github.com/selcukgural/Anka/blob/main/LICENSE)

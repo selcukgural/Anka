@@ -201,8 +201,10 @@ var server = new Server(handler: async (req, res, ct) =>
     }
 }, port: port);
 
-server.ListeningStarted += _ =>
+server.ListeningStarted += endpoint =>
 {
+    // Anka.Wrk.LoadTest measures "time to listen" from this line.
+    Console.WriteLine($"Listening on {endpoint}");
     var allocatedBytes = GC.GetTotalAllocatedBytes(true) - startupAllocatedBefore;
     Console.WriteLine(
         $"[startup-metrics] ready_ms={startupStopwatch.Elapsed.TotalMilliseconds.ToString("F2", CultureInfo.InvariantCulture)} allocated_bytes={allocatedBytes}");

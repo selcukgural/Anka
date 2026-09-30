@@ -21,6 +21,42 @@ public sealed class ServerOptions
     private TimeSpan? _readTimeout = DefaultTimeout;
     private TimeSpan? _requestHeadersTimeout = DefaultTimeout;
     private int? _maxConcurrentConnections;
+    private TimeSpan _shutdownTimeout = DefaultShutdownTimeout;
+
+    /// <summary>Default for <see cref="ShutdownTimeout"/>: 10 seconds.</summary>
+    public static readonly TimeSpan DefaultShutdownTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How long <see cref="Server.StartAsync"/> waits, after its token is cancelled, for requests that are
+    /// already inside the handler to finish.
+    /// <para>
+    /// On shutdown the server stops accepting connections and immediately closes connections that are not
+    /// running a handler (idle keep-alive connections, or requests still being received). Requests already
+    /// in the handler may complete and are answered with <c>Connection: close</c>. When this timeout expires,
+    /// the <see cref="CancellationToken"/> passed to the handler is cancelled and the remaining connections
+    /// are closed.
+    /// </para>
+    /// <para>
+    /// Defaults to <see cref="DefaultShutdownTimeout"/>. <see cref="TimeSpan.Zero"/> aborts in-flight
+    /// requests immediately.
+    /// </para>
+    /// <exception cref="AnkaOutOfRangeException">
+    /// Thrown when an attempt is made to set a negative value.
+    /// </exception>
+    /// </summary>
+    public TimeSpan ShutdownTimeout
+    {
+        get => _shutdownTimeout;
+        set
+        {
+            if (value < TimeSpan.Zero)
+            {
+                throw new AnkaOutOfRangeException(nameof(ShutdownTimeout), "Value must be non-negative.");
+            }
+
+            _shutdownTimeout = value;
+        }
+    }
 
     /// <summary>
     /// The minimum number of worker and I/O-completion threads that

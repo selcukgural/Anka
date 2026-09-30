@@ -36,6 +36,9 @@ public sealed class HttpResponseWriter : IDisposable
     private bool _chunkedFinished;
     private bool _closeDelimitedBody;
     private bool _closeAfterResponse;
+
+    /// <summary>Cancelled when the server is shutting down; responses written after that advertise close.</summary>
+    private readonly CancellationToken _stoppingToken;
     private HttpHeaders _requestHeaders;
     private readonly IReadOnlyList<HttpHeader> _defaultHeaders;
     private static readonly byte[] Continue100Response = "HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray();
@@ -54,9 +57,10 @@ public sealed class HttpResponseWriter : IDisposable
     /// This class manages buffer allocation and provides methods to
     /// asynchronously write HTTP response data to a socket.
     /// </remarks>
-    internal HttpResponseWriter(Socket socket, IReadOnlyList<HttpHeader>? defaultHeaders = null)
+    internal HttpResponseWriter(Socket socket, IReadOnlyList<HttpHeader>? defaultHeaders = null, CancellationToken stoppingToken = default)
     {
         _socket         = socket;
+        _stoppingToken  = stoppingToken;
         _defaultHeaders = defaultHeaders ?? [];
         _buf            = ArrayPool<byte>.Shared.Rent(DefaultBufSize);
         _stream         = new HttpResponseStream();
@@ -131,7 +135,7 @@ public sealed class HttpResponseWriter : IDisposable
         }
 
         _hasStarted = true;
-        keepAlive &= _requestKeepAlive;
+        keepAlive &= _requestKeepAlive && !_stoppingToken.IsCancellationRequested;
         if (!keepAlive)
         {
             _closeAfterResponse = true;
@@ -267,6 +271,7 @@ public sealed class HttpResponseWriter : IDisposable
     private ValueTask WriteInternalAsync(int statusCode, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte> contentType, bool keepAlive,
                                          ReadOnlySpan<HttpHeader> extraHeaders, long rangeStart, long rangeEnd, long totalLength, CancellationToken cancellationToken)
     {
+        ValidateStatusCode(statusCode);
         ValidateContentType(contentType.Span);
         keepAlive = BeginResponse(keepAlive);
 
@@ -333,6 +338,7 @@ public sealed class HttpResponseWriter : IDisposable
         ReadOnlySpan<HttpHeader> extraHeaders = default,
         CancellationToken cancellationToken = default)
     {
+        ValidateStatusCode(statusCode);
         ValidateContentType(contentType.Span);
         keepAlive = BeginResponse(keepAlive);
         _isChunked = true;
@@ -451,6 +457,18 @@ public sealed class HttpResponseWriter : IDisposable
         }
 
         return size;
+    }
+
+    /// <summary>
+    /// A final response needs a three-digit status code of at least 200: 1xx codes are interim responses
+    /// that would leave the client waiting for the real one.
+    /// </summary>
+    private static void ValidateStatusCode(int statusCode)
+    {
+        if (statusCode is < 200 or > 999)
+        {
+            throw new ArgumentOutOfRangeException(nameof(statusCode), statusCode, "Status code must be between 200 and 999.");
+        }
     }
 
     /// <summary>
@@ -1042,31 +1060,68 @@ public sealed class HttpResponseWriter : IDisposable
     /// <returns>A read-only span of bytes representing the reason phrase corresponding to the provided status code.</returns>
     private static ReadOnlySpan<byte> GetReasonPhrase(int code) => code switch
     {
+        100 => "Continue"u8,
+        101 => "Switching Protocols"u8,
+        102 => "Processing"u8,
+        103 => "Early Hints"u8,
         200 => "OK"u8,
         201 => "Created"u8,
+        202 => "Accepted"u8,
+        203 => "Non-Authoritative Information"u8,
         204 => "No Content"u8,
+        205 => "Reset Content"u8,
         206 => "Partial Content"u8,
+        207 => "Multi-Status"u8,
+        208 => "Already Reported"u8,
+        226 => "IM Used"u8,
+        300 => "Multiple Choices"u8,
         301 => "Moved Permanently"u8,
         302 => "Found"u8,
+        303 => "See Other"u8,
         304 => "Not Modified"u8,
+        305 => "Use Proxy"u8,
+        307 => "Temporary Redirect"u8,
+        308 => "Permanent Redirect"u8,
         400 => "Bad Request"u8,
         401 => "Unauthorized"u8,
+        402 => "Payment Required"u8,
         403 => "Forbidden"u8,
         404 => "Not Found"u8,
         405 => "Method Not Allowed"u8,
+        406 => "Not Acceptable"u8,
+        407 => "Proxy Authentication Required"u8,
+        408 => "Request Timeout"u8,
+        409 => "Conflict"u8,
+        410 => "Gone"u8,
         411 => "Length Required"u8,
+        412 => "Precondition Failed"u8,
         413 => "Payload Too Large"u8,
         414 => "URI Too Long"u8,
         415 => "Unsupported Media Type"u8,
+        416 => "Range Not Satisfiable"u8,
         417 => "Expectation Failed"u8,
+        421 => "Misdirected Request"u8,
+        422 => "Unprocessable Content"u8,
+        423 => "Locked"u8,
+        424 => "Failed Dependency"u8,
+        425 => "Too Early"u8,
+        426 => "Upgrade Required"u8,
+        428 => "Precondition Required"u8,
         429 => "Too Many Requests"u8,
         431 => "Request Header Fields Too Large"u8,
+        451 => "Unavailable For Legal Reasons"u8,
         500 => "Internal Server Error"u8,
         501 => "Not Implemented"u8,
+        502 => "Bad Gateway"u8,
         503 => "Service Unavailable"u8,
         504 => "Gateway Timeout"u8,
         505 => "HTTP Version Not Supported"u8,
-        _   => "Unknown"u8,
+        506 => "Variant Also Negotiates"u8,
+        507 => "Insufficient Storage"u8,
+        508 => "Loop Detected"u8,
+        511 => "Network Authentication Required"u8,
+        // RFC 9112 §4: the reason-phrase may be empty; clients must not rely on it.
+        _   => ReadOnlySpan<byte>.Empty,
     };
 
     /// <summary>

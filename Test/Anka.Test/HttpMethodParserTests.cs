@@ -5,32 +5,32 @@ namespace Anka.Test;
 public class HttpMethodParserTests
 {
     [Theory]
-    [InlineData("GET",     HttpMethod.Get)]
-    [InlineData("POST",    HttpMethod.Post)]
-    [InlineData("PUT",     HttpMethod.Put)]
-    [InlineData("DELETE",  HttpMethod.Delete)]
-    [InlineData("HEAD",    HttpMethod.Head)]
-    [InlineData("OPTIONS", HttpMethod.Options)]
-    [InlineData("PATCH",   HttpMethod.Patch)]
-    [InlineData("TRACE",   HttpMethod.Trace)]
-    [InlineData("CONNECT", HttpMethod.Connect)]
-    public void Parse_KnownMethod_ReturnsCorrectEnum(string method, HttpMethod expected)
+    [InlineData("GET",     RequestMethod.Get)]
+    [InlineData("POST",    RequestMethod.Post)]
+    [InlineData("PUT",     RequestMethod.Put)]
+    [InlineData("DELETE",  RequestMethod.Delete)]
+    [InlineData("HEAD",    RequestMethod.Head)]
+    [InlineData("OPTIONS", RequestMethod.Options)]
+    [InlineData("PATCH",   RequestMethod.Patch)]
+    [InlineData("TRACE",   RequestMethod.Trace)]
+    [InlineData("CONNECT", RequestMethod.Connect)]
+    public void Parse_KnownMethod_ReturnsCorrectEnum(string method, RequestMethod expected)
     {
         var bytes = Encoding.ASCII.GetBytes(method);
         Assert.Equal(expected, HttpMethodParser.Parse(bytes));
     }
     
     [Theory]
-    [InlineData(HttpMethod.Get)]
-    [InlineData(HttpMethod.Post)]
-    [InlineData(HttpMethod.Put)]
-    [InlineData(HttpMethod.Delete)]
-    [InlineData(HttpMethod.Head)]
-    [InlineData(HttpMethod.Options)]
-    [InlineData(HttpMethod.Patch)]
-    [InlineData(HttpMethod.Trace)]
-    [InlineData(HttpMethod.Connect)]
-    public void ToBytes_ThenParse_RoundTrip(HttpMethod method)
+    [InlineData(RequestMethod.Get)]
+    [InlineData(RequestMethod.Post)]
+    [InlineData(RequestMethod.Put)]
+    [InlineData(RequestMethod.Delete)]
+    [InlineData(RequestMethod.Head)]
+    [InlineData(RequestMethod.Options)]
+    [InlineData(RequestMethod.Patch)]
+    [InlineData(RequestMethod.Trace)]
+    [InlineData(RequestMethod.Connect)]
+    public void ToBytes_ThenParse_RoundTrip(RequestMethod method)
     {
         var bytes = method.ToBytes();
         Assert.Equal(method, HttpMethodParser.Parse(bytes));
@@ -39,7 +39,7 @@ public class HttpMethodParserTests
     [Fact]
     public void Parse_EmptySpan_ReturnsUnknown()
     {
-        Assert.Equal(HttpMethod.Unknown, HttpMethodParser.Parse([]));
+        Assert.Equal(RequestMethod.Unknown, HttpMethodParser.Parse([]));
     }
 
     [Theory]
@@ -50,7 +50,7 @@ public class HttpMethodParserTests
     {
         // Methods are case-sensitive per RFC 7230
         var bytes = Encoding.ASCII.GetBytes(method);
-        Assert.Equal(HttpMethod.Unknown, HttpMethodParser.Parse(bytes));
+        Assert.Equal(RequestMethod.Unknown, HttpMethodParser.Parse(bytes));
     }
 
     [Theory]
@@ -60,13 +60,13 @@ public class HttpMethodParserTests
     public void Parse_UnknownMethod_ReturnsUnknown(string method)
     {
         var bytes = Encoding.ASCII.GetBytes(method);
-        Assert.Equal(HttpMethod.Unknown, HttpMethodParser.Parse(bytes));
+        Assert.Equal(RequestMethod.Unknown, HttpMethodParser.Parse(bytes));
     }
 
     [Fact]
     public void ToBytes_UnknownMethod_ReturnsUnknownBytes()
     {
-        var bytes = HttpMethod.Unknown.ToBytes();
+        var bytes = RequestMethod.Unknown.ToBytes();
         Assert.True(bytes.SequenceEqual("UNKNOWN"u8));
     }
 }

@@ -110,7 +110,7 @@ public class HttpRequestTests
     public void Method_ParsedEnum_MatchesRawMethod()
     {
         using var req = ParseOrFail("DELETE /resource/5 HTTP/1.1\r\nHost: x.com\r\n\r\n").AsDisposable();
-        Assert.Equal(HttpMethod.Delete, req.Value.Method);
+        Assert.Equal(RequestMethod.Delete, req.Value.Method);
     }
 
     [Fact]
@@ -177,7 +177,7 @@ public class HttpRequestTests
         var seq1    = new ReadOnlySequence<byte>(bytes1);
         var reader1 = new SequenceReader<byte>(seq1);
         HttpParser.TryParse(ref reader1, req);
-        Assert.Equal(HttpMethod.Post, req.Method);
+        Assert.Equal(RequestMethod.Post, req.Method);
         req.ResetForReuse();
 
         // Parse second request — reuses same object
@@ -187,7 +187,7 @@ public class HttpRequestTests
         HttpParser.TryParse(ref reader2, req);
 
         // State must reflect the NEW request, not the old one
-        Assert.Equal(HttpMethod.Get, req.Method);
+        Assert.Equal(RequestMethod.Get, req.Method);
         Assert.Equal("/clean", req.Path);
         Assert.True(req.Body.IsEmpty);
         Assert.Null(req.QueryString);
