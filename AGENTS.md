@@ -70,10 +70,10 @@ TCP bytes
 
 | Directory | Files | Purpose |
 |-----------|-------|---------|
-| `src/Anka/src/Core/` | `Server.cs`, `HttpRequest.cs`, `HttpResponseWriter.cs`, `HttpHeaders.cs`, `HttpHeaderNames.cs`, `HttpMethod.cs`, `HttpVersion.cs`, `ServerOptions.cs` | Public API; everything a user imports |
+| `src/Anka/src/Core/` | `Server.cs`, `HttpRequest.cs`, `HttpResponseWriter.cs`, `HttpHeaders.cs`, `HttpHeaderNames.cs`, `RequestMethod.cs`, `HttpVersion.cs`, `ServerOptions.cs`, `MultipartParser.cs` | Public API; everything a user imports |
 | `src/Anka/src/Internal/` | `Connection.cs`, `HttpParser.cs`, `HttpRequestPool.cs`, `SocketReceiver.cs`, `ChunkedBodyParser.cs`, `HttpMethodParser.cs`, `HttpVersionParser.cs` | Implementation; hidden from users; tested via `InternalsVisibleTo` |
 | `src/Anka/src/Exceptions/` | `AnkaArgumentException.cs`, `AnkaOutOfRangeException.cs` | Domain-specific exception types |
-| `Test/Anka.Test/` | 254 unit tests across 16 files | Full parser, transport, limits, RFC validation coverage |
+| `Test/Anka.Test/` | xUnit tests, one file per area | Full parser, transport, limits, RFC validation coverage |
 | `Benchmark/Anka.Benchmark/` | `HttpParserBenchmarks.cs`, etc. | BenchmarkDotNet micro-benchmarks (target: zero allocation) |
 
 ---
@@ -162,7 +162,7 @@ await res.WriteAsync(status, body, contentType, keepAlive: request.IsKeepAlive, 
 # Build (all projects)
 dotnet build Anka.slnx --nologo
 
-# Full test suite (254 tests)
+# Full test suite
 dotnet test Anka.slnx --nologo
 
 # Single test by name
@@ -276,7 +276,7 @@ The primary goal is to reach **~90% RFC 9110/9112 compliance** while maintaining
 
 1. **Range Requests — Done.** `HttpResponseWriter.WritePartialAsync(rangeStart, rangeEnd, totalLength, ...)` sends `206 Partial Content` with `Content-Range`/`Accept-Ranges`. `If-Range` conditional revalidation is *not* implemented (the header name constant exists in `HttpHeaderNames`, but nothing reads it) — callers that want `If-Range` semantics must check it themselves before deciding whether to call `WritePartialAsync`.
 2. **Automated Cache Validation — Done.** `HttpResponseWriter` compares `If-None-Match` against the response's `ETag` header (exact match only) and auto-downgrades `200` → `304` with the body suppressed. See `Test/Anka.Test/CacheValidationTests.cs`.
-3. **Multipart Parsing — Done.** `src/Anka/src/Internal/MultipartParser.cs` is a zero-allocation `ref struct` parser for `multipart/form-data` (`TryReadNextPart`, `Content-Disposition` name/filename extraction). See `Test/Anka.Test/MultipartTests.cs`.
+3. **Multipart Parsing — Done.** `src/Anka/src/Core/MultipartParser.cs` (namespace `Anka`) is a zero-allocation `ref struct` parser for `multipart/form-data` (`TryGetBoundary`, `TryReadNextPart`, `Content-Disposition` name/filename extraction). See `Test/Anka.Test/MultipartTests.cs`.
 
 No further items are currently tracked on the roadmap.
 
@@ -284,12 +284,12 @@ No further items are currently tracked on the roadmap.
 
 ## Document References
 
-- **Architecture:** Lines 420–453 of README (box diagram + data flow)
-- **RFC Compliance:** Lines 324–411 of README (supported/unsupported features)
-- **Performance Targets:** Lines 899–1015 of README (benchmarks + end-to-end results)
-- **Test Coverage:** Lines 1090–1116 of README (test suite table)
+- **Architecture, memory model, repository layout:** [`docs/architecture.md`](docs/architecture.md)
+- **Benchmarks and load-test results:** [`docs/performance.md`](docs/performance.md)
+- **User-facing behaviour** (automatic 4xx/5xx responses, limits, keep-alive, response rules): README, sections "What Anka handles for you", "Configuration" and "Core concepts"
 
-Line numbers drift whenever README is edited — if they look off, re-grep the section headers rather than trusting the numbers blindly.
+The README is written for library users and is also the NuGet package page: keep it task-oriented, keep its code
+samples compiling, and put internals in `docs/` instead.
 
 ---
 
